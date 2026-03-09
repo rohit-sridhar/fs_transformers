@@ -1,0 +1,12 @@
+numpy
+onnx
+torch
+torchvision
+torchaudio
+onnxscript
+pandas
+tqdm
+onnxruntime
+pyarrow
+argparse
+scikit-learn
