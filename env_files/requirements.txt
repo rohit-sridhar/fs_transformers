@@ -10,3 +10,5 @@ onnxruntime
 pyarrow
 argparse
 scikit-learn
+matplotlib
+transformers

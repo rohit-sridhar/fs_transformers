@@ -104,6 +104,12 @@ def parse_args():
 
     # Model Args
     parser.add_argument(
+        "-std",
+        "--std_out",
+        action="store_true",
+        help="If set, logs to stdout instead of log file."
+    )
+    parser.add_argument(
         "-msr",
         "--model_sub_root",
         type=str,
@@ -114,7 +120,7 @@ def parse_args():
         "-mt",
         "--model_type",
         type=str,
-        choices=["LSTM", "GRU", "GRULSTM", "ProbGRULSTM1", "ProbGRULSTM2", "Transformer"],
+        choices=["LSTM", "GRU", "GRULSTM", "ProbGRULSTM1", "ProbGRULSTM2", "Transformer", "ByT5"],
         required=is_required("model_type"),
         help="model type to train on (train)",
     )
@@ -246,6 +252,7 @@ def parse_args():
         default=0.9,
         help="split ratio when doing train/test split. pass val in (0,1) for ratio and >= 1 for n samples (analysis)",
     )
+
     # Shared
     parser.add_argument(
         "-pca",

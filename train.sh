@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ROOT=/data/deep_learning/sltorch
+ROOT=/data/deep_learning/fs_transformers
 
 ############################## for test run and debugging ############################### 
 ### Already tuned on n100/n1000
@@ -18,11 +18,11 @@ ROOT=/data/deep_learning/sltorch
 
 # Without preprocessing
 python ${ROOT}/train.py \
-        -df ${ROOT}/datasets/data_supplemental_gen_drop-na_lininterp0_sd1248_rh_smp3.pkl.train \
-        -msr run_tests \
-        -se 1000 -ep 15000 -bs 2 -lr 1e-4 \
-        -lf CEL -mt Transformer -op Adam \
-        -bp 0
+        -df ${ROOT}/data/data_supplemental_gen_drop-na_lininterp0_sd1248_rh.pkl.train \
+        -msr first_pass \
+        -se 50 -ep 500 -bs 16 -lr 5e-4 \
+        -lf CEL -mt ByT5 -op Adam \
+        -bp 0 # -std
 # ((bp+=3))
 # pid+=("$!")
 

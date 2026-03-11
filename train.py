@@ -16,6 +16,9 @@ from torch import nn
 from torch.optim import Adam, RMSprop
 from torch.utils.data import DataLoader
 from torch.nn.functional import one_hot
+# from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+from transformers import AutoTokenizer
+from models import T5ForConditionalGenerationProjection
 
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
@@ -26,7 +29,9 @@ sys.path.append(f"{TRAIN_FILE_ROOT}/..")
 
 from utils import (
     read_pickle,
+    df_to_bytes,
     MODELS_ROOT,
+    BYT5_NUM_SPECIAL_TOKENS,
 )
 from args import parse_args
 from models import (
@@ -62,18 +67,27 @@ def setup_logger(log_dir):
     if log_file.exists():
         filemode='a'
 
-    logging.basicConfig(
-        filename=log_file,
-        filemode=filemode,
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d | %H:%M:%S'
-    )
+    if args.std_out:
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d | %H:%M:%S'
+        )
+    else:
+        logging.basicConfig(
+            filename=log_file,
+            filemode=filemode,
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d | %H:%M:%S'
+        )
 
 # Sets up the sampler and loader and returns both.
 # The sampler samples by seq_ix while the loader loads
 # and collates sequences using the sampler.
-def get_sampler_and_loader(df, idx_list, device, generator):
+# modified for ByT5
+def get_sampler_and_loader(df, idx_list, device, generator, pad_token_id=0):
     X = df.loc[idx_list, ["all_landmarks"]]
     y = df.loc[idx_list, ["phrase"]]
 
@@ -86,15 +100,19 @@ def get_sampler_and_loader(df, idx_list, device, generator):
         sampler=idx_sampler,
         collate_fn=lambda seq: collate_seq(
             seq,
-            generator=generator,
             device=device,
+            pad_token_id=pad_token_id
         ),
     )
     
     return idx_sampler, loader
 
 # return the loss function base on args
+# modified for ByT5
 def get_loss_fn():
+    if args.model_type == "ByT5":
+        return None
+
     if args.loss_fn == "MSE":
         return nn.MSELoss(reduction="sum")
     elif args.loss_fn == "MAE":
@@ -118,10 +136,10 @@ def get_optimizer(model):
         return RMSprop(model.parameters(), lr=args.learning_rate, centered=True)
 
 # Get model based on args model type
-def get_model(num_feats, device):
+def get_model(device):
     if args.model_type == "LSTM":
         model = LSTMModel(
-            num_feats,
+            SUPP_INPUT_DIM,
             args.hidden_size,
             len(TARGET_COLS),
             num_layers=args.num_layers,
@@ -129,7 +147,7 @@ def get_model(num_feats, device):
         )
     elif args.model_type == "GRU":
         model = GRUModel(
-            num_feats,
+            SUPP_INPUT_DIM,
             32, # args.hidden_size,
             4, # len(TARGET_COLS),
             2, # num_layers=args.num_layers,
@@ -137,7 +155,7 @@ def get_model(num_feats, device):
         )
     elif args.model_type == "GRULSTM":
         model = GRULSTMModel(
-            num_feats,
+            SUPP_INPUT_DIM,
             args.hidden_size,
             len(TARGET_COLS),
             num_layers=args.num_layers,
@@ -148,7 +166,7 @@ def get_model(num_feats, device):
             raise ValueError("Must pass GNLL loss type for ProbGRULSTM1")
         
         model = ProbGRULSTMModel1(
-            num_feats,
+            SUPP_INPUT_DIM,
             args.hidden_size,
             len(TARGET_COLS),
             num_layers=args.num_layers,
@@ -159,7 +177,7 @@ def get_model(num_feats, device):
             raise ValueError("Must pass GNLL loss type for ProbGRULSTM2")
         
         model = ProbGRULSTMModel2(
-            num_feats,
+            SUPP_INPUT_DIM,
             args.hidden_size,
             len(TARGET_COLS),
             num_layers=args.num_layers,
@@ -169,6 +187,17 @@ def get_model(num_feats, device):
         if args.loss_fn != "CEL":
             raise ValueError("Must use CEL with Transformer model type")
         model = TransformerModel(SUPP_INPUT_DIM, SUPP_OUTPUT_DIM)
+    elif args.model_type == "ByT5":
+        model_args = [SUPP_INPUT_DIM]
+        model = T5ForConditionalGenerationProjection.from_pretrained(
+            "google/byt5-small",
+            *model_args,
+        )
+        model.init_linear_projection()
+
+        # print(torch.all(model.encoder.embed_tokens.weight == model.decoder.embed_tokens.weight))
+        # print(torch.all(model.shared.weight == model.decoder.embed_tokens.weight))
+        # sys.exit(1)
 
     model.to(device)
     model.train()
@@ -232,64 +261,89 @@ def get_causal_mask(model, tgt, device):
     return tgt_mask != 0.0
 
 # get the validation loss (jsut for the training loop)
-def get_val_loss_and_score(model, loader, loss_fn, device):
+def get_val_loss_and_score(
+    model,
+    loader,
+    device,
+    pad_token_id=0
+):
     len_loader = len(loader)
-    # total_scores = []
-    total_tgts = 0
-    total_loss = 0
-    model.eval()
+    total_scores = []
+    total_tgts = []
+    total_losses = []
+
+    ####!!! Set bool below for small datasets !!!####
+    # model.eval()
+    ####!!! ||||||||||||||||||||||||||||||||| !!!####
 
     for seq in tqdm(
         loader,
         total=len_loader,
         desc="validation",
         leave=False,
-        position=args.bar_position+2
+        position=args.bar_position+2,
+        disable=args.std_out,
     ):
         with torch.no_grad():
-            src = seq[0]
-            tgt = seq[1][:,:-1]
-            ans = seq[1][:,1:]
+            inputs_embeds = seq[0]
+            labels = seq[1]
             
-            # first mask is the causal mask (for teacher forcing autoregressive training)
-            # tgt_mask = model.transformer.generate_square_subsequent_mask(tgt.shape[1], device=device)
-            tgt_mask = get_causal_mask(model, tgt, device)
-            src_padding_mask, tgt_padding_mask, ans_padding_mask = get_padding_mask(
-                src,
-                tgt,
-                ans,
-                device
+            outputs = model(
+                inputs_embeds=inputs_embeds,
+                labels=labels,
             )
 
-            out = model.forward(
-                src,
-                tgt,
-                tgt_mask=tgt_mask,
-                src_padding_mask=src_padding_mask,
-                tgt_padding_mask=tgt_padding_mask,
-            )
-            
-            out_flat = out.reshape((-1, SUPP_OUTPUT_DIM))
-            ans_flat = one_hot(ans, num_classes=SUPP_OUTPUT_DIM).float()
-            ans_flat = ans_flat.reshape((-1, SUPP_OUTPUT_DIM))
-            
-            ans_padding_mask = ans_padding_mask.reshape((-1))
-            loss = get_batch_loss(loss_fn, out_flat, ans_flat)
-            loss = (loss * ~ans_padding_mask).sum() / (~ans_padding_mask).sum()
-        
+            loss = outputs.loss
+            preds = torch.argmax(outputs.logits, axis=-1)
+            tgts = (labels != pad_token_id)
+            score = (labels == preds) * tgts
+
+        total_losses.append(loss.item())
+        total_tgts.append(tgts.sum().item())
+        total_scores.append(score.sum().item() / tgts.sum().item())
+
+        ################################################## OLD TRANSFORMER TRAINING
+        #     tgt = seq[1][:,:-1]
+        #     ans = seq[1][:,1:]
+        #     
+        #     first mask is the causal mask (for teacher forcing autoregressive training)
+        #     tgt_mask = model.transformer.generate_square_subsequent_mask(tgt.shape[1], device=device)
+        #     tgt_mask = get_causal_mask(model, tgt, device)
+        #     src_padding_mask, tgt_padding_mask, ans_padding_mask = get_padding_mask(
+        #         src,
+        #         tgt,
+        #         ans,
+        #         device
+        #     )
+
+        #     out = model.forward(
+        #         src,
+        #         tgt,
+        #         tgt_mask=tgt_mask,
+        #         src_padding_mask=src_padding_mask,
+        #         tgt_padding_mask=tgt_padding_mask,
+        #     )
+        #     
+        #     out_flat = out.reshape((-1, SUPP_OUTPUT_DIM))
+        #     ans_flat = one_hot(ans, num_classes=SUPP_OUTPUT_DIM).float()
+        #     ans_flat = ans_flat.reshape((-1, SUPP_OUTPUT_DIM))
+        #     
+        #     ans_padding_mask = ans_padding_mask.reshape((-1))
+        #     loss = get_batch_loss(loss_fn, out_flat, ans_flat)
+        #     loss = (loss * ~ans_padding_mask).sum() / (~ans_padding_mask).sum()
         # total_scores.append(get_batch_score(out, y))
-        total_tgts += ans.shape[0] * ans.shape[1]
-        total_loss += loss.item()
+        # total_tgts += ans.shape[0] * ans.shape[1]
+        # total_loss += loss.item()
 
     model.train()
-    # total_scores = np.stack(total_scores, axis=0)
-    val_loss = total_loss / total_tgts
-    # val_score = np.average(total_scores, weights=total_tgts, axis=0)
+    val_loss = np.average(total_losses, weights=total_tgts, axis=0)
+    val_score = np.average(total_scores, weights=total_tgts, axis=0)
 
     # return val loss and val score
-    return val_loss #, np.mean(val_score).item()
+    return val_loss, val_score
 
 # main model training loop
+# modified for ByT5
 def train_model(
     model,
     sampler,
@@ -297,80 +351,108 @@ def train_model(
     val_loader,
     save_dir,
     device,
+    pad_token_id=0,
 ):
     optimizer = get_optimizer(model)
     loss_fn = get_loss_fn()
     
+    model.eval()
     for epoch in tqdm(
         list(range(1, args.num_epochs + 1)),
         desc="epochs",
-        position=args.bar_position
+        position=args.bar_position,
+        disable=args.std_out,
     ):
         epoch_tgts = []
         epoch_losses = []
         epoch_scores = []
         
         len_loader = len(train_loader)
-
         for seq in tqdm(
             train_loader,
             total=len_loader,
             desc="sequences",
             leave=False,
-            position=args.bar_position+1
+            position=args.bar_position+1,
+            disable=args.std_out,
         ):
-            src = seq[0]
-            tgt = seq[1][:,:-1]
-            ans = seq[1][:,1:]
+            inputs_embeds = seq[0]
+            labels = seq[1]
             
-            # first mask is the causal mask (for teacher forcing autoregressive training)
-            tgt_mask = get_causal_mask(model, tgt, device)
-            src_padding_mask, tgt_padding_mask, ans_padding_mask = get_padding_mask(
-                src,
-                tgt,
-                ans,
-                device
+            outputs = model(
+                inputs_embeds=inputs_embeds,
+                labels=labels,
             )
-            
-            optimizer.zero_grad()
-            out = model.forward(
-                src,
-                tgt,
-                tgt_mask=tgt_mask,
-                src_padding_mask=src_padding_mask,
-                tgt_padding_mask=tgt_padding_mask,
-            )
-            
-            out_flat = out.reshape((-1, SUPP_OUTPUT_DIM))
-            ans_flat = one_hot(ans, num_classes=SUPP_OUTPUT_DIM).float()
-            ans_flat = ans_flat.reshape((-1, SUPP_OUTPUT_DIM))
+            loss = outputs.loss
+            preds = torch.argmax(outputs.logits, axis=-1)
+            tgts = (labels != pad_token_id)
+            score = (labels == preds) * tgts
 
-            ans_padding_mask = ans_padding_mask.reshape((-1))
-            num_tgts = (~ans_padding_mask).sum()
-            loss = get_batch_loss(loss_fn, out_flat, ans_flat)
-            loss = (loss * ~ans_padding_mask).sum() / num_tgts
-            
             loss.backward()
             optimizer.step()
+            optimizer.zero_grad()
             
-            out_idx = torch.argmax(out, dim=-1)
-            score = (out_idx == ans).reshape((-1))
-            score = (score * ~ans_padding_mask).sum() / num_tgts
-
-            epoch_tgts.append((~ans_padding_mask).sum().item())
-            epoch_scores.append(score.item())
             epoch_losses.append(loss.item())
-        
-        # Hardcode logging epochs to every 10 (change as needed)
-        if epoch % 10 == 0:
-            train_score = np.average(epoch_scores, weights=epoch_tgts)
-            train_loss = np.average(epoch_losses, weights=epoch_tgts)
+            epoch_tgts.append(tgts.sum().item())
+            epoch_scores.append(score.sum().item() / tgts.sum().item())
 
+            ################################################## OLD TRANSFORMER CODE
+            # src = seq[0]
+            # tgt = seq[1][:,:-1]
+            # ans = seq[1][:,1:]
+            # 
+            # # first mask is the causal mask (for teacher forcing autoregressive training)
+            # tgt_mask = get_causal_mask(model, tgt, device)
+            # src_padding_mask, tgt_padding_mask, ans_padding_mask = get_padding_mask(
+            #     src,
+            #     tgt,
+            #     ans,
+            #     device
+            # )
+            # 
+            # optimizer.zero_grad()
+            # out = model.forward(
+            #     src,
+            #     tgt,
+            #     tgt_mask=tgt_mask,
+            #     src_padding_mask=src_padding_mask,
+            #     tgt_padding_mask=tgt_padding_mask,
+            # )
+            # 
+            # out_flat = out.reshape((-1, SUPP_OUTPUT_DIM))
+            # ans_flat = one_hot(ans, num_classes=SUPP_OUTPUT_DIM).float()
+            # ans_flat = ans_flat.reshape((-1, SUPP_OUTPUT_DIM))
+
+            # ans_padding_mask = ans_padding_mask.reshape((-1))
+            # num_tgts = (~ans_padding_mask).sum()
+            # loss = get_batch_loss(loss_fn, out_flat, ans_flat)
+            # loss = (loss * ~ans_padding_mask).sum() / num_tgts
+            # 
+            # loss.backward()
+            # optimizer.step()
+            # 
+            # out_idx = torch.argmax(out, dim=-1)
+            # score = (out_idx == ans).reshape((-1))
+            # score = (score * ~ans_padding_mask).sum() / num_tgts
+
+            # epoch_tgts.append((~ans_padding_mask).sum().item())
+            # epoch_scores.append(score.item())
+            # epoch_losses.append(loss.item())
+        
+        # Hardcode logging epochs to every 5 (change as needed)
+        if epoch % 5 == 0:
+            ################################################## OLD TRANSFORMER CODE
+            # train_score = np.average(epoch_scores, weights=epoch_tgts)
             # val_loss, val_score = get_val_loss_and_score(model, val_loader, loss_fn)
             # val_loss = get_val_loss_and_score(model, val_loader, loss_fn, device)
             # logging.info(f"Loss and score of epoch {epoch} - train: {train_loss} | val: {val_loss} | train: {train_score}") | val: {val_score}")
-            logging.info(f"Loss and score of epoch {epoch} - train: {train_loss} | train: {train_score}")
-            logging.info(f"Pred and Tgt (Seq 1) Pred: {out_idx} | tgt: {ans}")
+
+            val_loss, val_score = get_val_loss_and_score(model, val_loader, device, pad_token_id)
+            train_loss = np.average(epoch_losses, weights=epoch_tgts)
+            train_score = np.average(epoch_scores, weights=epoch_tgts)
+
+            logging.info(f"Loss and score of epoch {epoch} - train: {train_loss} | val: {val_loss} | train: {train_score} | val: {val_score}")
+            # logging.info(f"Preds: {preds} | labels: {labels}")
     
         if epoch % args.save_every == 0:
             save_model(model, optimizer, epoch, loss_fn, save_dir)
@@ -396,6 +478,7 @@ def get_num_rows_feats(df):
     
     return num_rows, num_feats
 
+
 # print(torch.version.cuda)
 # print(f"Torch path: {os.path.dirname(torch.__file__)}")
 if __name__ == "__main__":
@@ -413,6 +496,9 @@ if __name__ == "__main__":
     logging.info(args)
      
     df = read_pickle(args.data_file)
+    if args.model_type == "ByT5":
+        tokenizer = AutoTokenizer.from_pretrained("google/byt5-small")
+        df = df_to_bytes(df, eos_token_id=tokenizer.eos_token_id)
     # num_rows, num_feats = get_num_rows_feats(df) # this output is used later
     
     idx_list = list(set(df.index.to_list()))
@@ -421,19 +507,35 @@ if __name__ == "__main__":
         test_size=0.1,
         random_state=args.seed
     )
-    print(f"Train Seqs: {train_idx}")
+
+    ####!!! Print below for small datasets !!!####
+    # print(f"Train Seqs: {train_idx}")
+    ####!!! ||||||||||||||||||||||||||||||||| !!!####
     
     torch.manual_seed(args.seed)
     gen = torch.Generator()
     gen.manual_seed(args.seed)
     device = torch.cuda.current_device()
 
-    train_sampler, train_loader = get_sampler_and_loader(df, train_idx, device, gen)
-    _, val_loader = get_sampler_and_loader(df, val_idx, device, gen)
+    train_sampler, train_loader = get_sampler_and_loader(
+        df,
+        train_idx,
+        device,
+        gen, 
+        pad_token_id=tokenizer.pad_token_id
+    )
+    _, val_loader = get_sampler_and_loader(
+        df,
+        val_idx,
+        device,
+        gen,
+        pad_token_id=tokenizer.pad_token_id
+    )
 
     # replace 20 with num_feats and 3 with num_rows later
-    model = get_model(20, device)
-    count_parameters_and_data(model, 3, 20)
+    model = get_model(device)
+    
+    # count_parameters_and_data(model, 3, 20)
     train_model(
         model,
         train_sampler,
@@ -441,5 +543,6 @@ if __name__ == "__main__":
         val_loader,
         save_dir,
         device,
+        pad_token_id=tokenizer.pad_token_id,
     )
 

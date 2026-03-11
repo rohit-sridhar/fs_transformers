@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import json
 import torch
 import random
 
@@ -38,6 +39,7 @@ SPLITS_ROOT = ROOT.joinpath("datasets", "splits")
 # X_COLS_START = 2      # accounts for seq_ix, step_in_seq and needs_prediction
 
 ##### Model Constants
+BYT5_NUM_SPECIAL_TOKENS = 3
 
 HYPERPARAMS = [
     "Model:",
@@ -459,7 +461,7 @@ def get_loss_and_score_by_epoch(lines):
                 epoch = re.search("[0-9]+", epoch_match.group())
                 epochs.append(int(epoch.group()))
             
-            loss_match = re.findall("[0-9]+\.[0-9]+", ln)
+            loss_match = re.findall("[0-9]+\\.[0-9]+", ln)
             if len(loss_match) == 2:
                 train_losses.append(float(loss_match[0]))
                 val_losses.append(float(loss_match[1]))
@@ -469,7 +471,7 @@ def get_loss_and_score_by_epoch(lines):
                 epoch = re.search("[0-9]+", epoch_match.group())
                 epochs.append(int(epoch.group()))
             
-            loss_match = re.findall(r"-?[0-9]+\.[0-9]+(?:e[+|-][0-9]+)?", ln)
+            loss_match = re.findall(r"-?[0-9]+\\.[0-9]+(?:e[+|-][0-9]+)?", ln)
             if len(loss_match) == 4:
                 train_losses.append(float(loss_match[0]))
                 val_losses.append(float(loss_match[1]))
@@ -522,6 +524,31 @@ def make_loss_plots(model_dir):
         plt.savefig(plt_file, bbox_inches="tight")
         
         plt.clf()
+
+#################### data processing functions ######
+def df_to_bytes(df, eos_token_id=1):
+    def df_cols_to_bytes(row):
+        row.phrase = "".join([reverse_char_map[idx] for idx in row.phrase[1:-1]])
+        row.phrase = list(row.phrase.encode("utf-8"))
+        row.phrase = [enc + BYT5_NUM_SPECIAL_TOKENS for enc in row.phrase] + [eos_token_id]
+
+        # all_landmarks = []
+        # for frame in row.all_landmarks:
+        #     new_landmarks = [round(val*100).to_bytes(signed=True) for val in frame]
+        #     all_landmarks.extend(new_landmarks)
+
+        # row.all_landmarks = list(b"".join(all_landmarks))
+        # row.all_landmarks = [enc+BYT5_NUM_SPECIAL_TOKENS for enc in row.all_landmarks] + [eos_token_id]
+
+        return row
+    
+    with open("supplemental_character_to_prediction_index.json", "r") as f:
+        char_map = json.load(f)
+        reverse_char_map = {char_map[key]:key for key in char_map}
+
+        df = df.apply(df_cols_to_bytes, axis=1)
+
+    return df
 
 ##### PCA Results #####
 # pca on ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9', 'p10', 'p11', 'v0', 'v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'dp0', 'dp1', 'dp2', 'dp3', 'dv0', 'dv1', 'dv2', 'dv3']
