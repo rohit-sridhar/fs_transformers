@@ -13,7 +13,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from torch import nn
-from torch.optim import Adam, RMSprop
+from torch.optim import Adam, RMSprop, Adafactor
 from torch.utils.data import DataLoader
 from torch.nn.functional import one_hot
 # from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -37,9 +37,9 @@ from args import parse_args
 from models import (
     TransformerModel,
     DATA_PAD,
-    SUPP_PAD_IDX,
-    SUPP_INPUT_DIM,
-    SUPP_OUTPUT_DIM,
+    # SUPP_PAD_IDX,
+    INPUT_DIM,
+    # SUPP_OUTPUT_DIM,
     IdxDataset,
     SimpleRandomSampler,
     collate_seq,
@@ -130,65 +130,67 @@ def get_loss_fn():
 
 # returns optimizer based on optimizer type
 def get_optimizer(model):
-    if args.optimizer == "Adam":
+    if args.optimizer == "Adafactor":
+        return Adafactor(model.parameters())
+    elif args.optimizer == "Adam":
         return Adam(model.parameters(), lr=args.learning_rate)
     elif args.optimizer == "RMSprop":
         return RMSprop(model.parameters(), lr=args.learning_rate, centered=True)
 
 # Get model based on args model type
 def get_model(device):
-    if args.model_type == "LSTM":
-        model = LSTMModel(
-            SUPP_INPUT_DIM,
-            args.hidden_size,
-            len(TARGET_COLS),
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-        )
-    elif args.model_type == "GRU":
-        model = GRUModel(
-            SUPP_INPUT_DIM,
-            32, # args.hidden_size,
-            4, # len(TARGET_COLS),
-            2, # num_layers=args.num_layers,
-            dropout=0.0, # dropout=args.dropout,
-        )
-    elif args.model_type == "GRULSTM":
-        model = GRULSTMModel(
-            SUPP_INPUT_DIM,
-            args.hidden_size,
-            len(TARGET_COLS),
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-        )
-    elif args.model_type == "ProbGRULSTM1":
-        if args.loss_fn != "GNLL":
-            raise ValueError("Must pass GNLL loss type for ProbGRULSTM1")
-        
-        model = ProbGRULSTMModel1(
-            SUPP_INPUT_DIM,
-            args.hidden_size,
-            len(TARGET_COLS),
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-        )
-    elif args.model_type == "ProbGRULSTM2":
-        if args.loss_fn != "GNLL":
-            raise ValueError("Must pass GNLL loss type for ProbGRULSTM2")
-        
-        model = ProbGRULSTMModel2(
-            SUPP_INPUT_DIM,
-            args.hidden_size,
-            len(TARGET_COLS),
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-        )
-    elif args.model_type == "Transformer":
-        if args.loss_fn != "CEL":
-            raise ValueError("Must use CEL with Transformer model type")
-        model = TransformerModel(SUPP_INPUT_DIM, SUPP_OUTPUT_DIM)
-    elif args.model_type == "ByT5":
-        model_args = [SUPP_INPUT_DIM]
+    # if args.model_type == "LSTM":
+    #     model = LSTMModel(
+    #         INPUT_DIM,
+    #         args.hidden_size,
+    #         len(TARGET_COLS),
+    #         num_layers=args.num_layers,
+    #         dropout=args.dropout,
+    #     )
+    # elif args.model_type == "GRU":
+    #     model = GRUModel(
+    #         INPUT_DIM,
+    #         32, # args.hidden_size,
+    #         4, # len(TARGET_COLS),
+    #         2, # num_layers=args.num_layers,
+    #         dropout=0.0, # dropout=args.dropout,
+    #     )
+    # elif args.model_type == "GRULSTM":
+    #     model = GRULSTMModel(
+    #         INPUT_DIM,
+    #         args.hidden_size,
+    #         len(TARGET_COLS),
+    #         num_layers=args.num_layers,
+    #         dropout=args.dropout,
+    #     )
+    # elif args.model_type == "ProbGRULSTM1":
+    #     if args.loss_fn != "GNLL":
+    #         raise ValueError("Must pass GNLL loss type for ProbGRULSTM1")
+    #     
+    #     model = ProbGRULSTMModel1(
+    #         INPUT_DIM,
+    #         args.hidden_size,
+    #         len(TARGET_COLS),
+    #         num_layers=args.num_layers,
+    #         dropout=args.dropout,
+    #     )
+    # elif args.model_type == "ProbGRULSTM2":
+    #     if args.loss_fn != "GNLL":
+    #         raise ValueError("Must pass GNLL loss type for ProbGRULSTM2")
+    #     
+    #     model = ProbGRULSTMModel2(
+    #         INPUT_DIM,
+    #         args.hidden_size,
+    #         len(TARGET_COLS),
+    #         num_layers=args.num_layers,
+    #         dropout=args.dropout,
+    #     )
+    # elif args.model_type == "Transformer":
+    #     if args.loss_fn != "CEL":
+    #         raise ValueError("Must use CEL with Transformer model type")
+    #     model = TransformerModel(INPUT_DIM, SUPP_OUTPUT_DIM)
+    if args.model_type == "ByT5":
+        model_args = [INPUT_DIM]
         model = T5ForConditionalGenerationProjection.from_pretrained(
             "google/byt5-small",
             *model_args,
@@ -247,18 +249,18 @@ def get_batch_loss(loss_fn, out, y):
 
     return loss
 
-def get_padding_mask(src, tgt, ans, device):
-    src_padding_mask = (src.sum(dim=-1) == DATA_PAD*src.shape[-1]).to(device)
-    tgt_padding_mask = (tgt == SUPP_PAD_IDX).to(device)
-    ans_padding_mask = (ans == SUPP_PAD_IDX).to(device)
+# def get_padding_mask(src, tgt, ans, device):
+#     src_padding_mask = (src.sum(dim=-1) == DATA_PAD*src.shape[-1]).to(device)
+#     tgt_padding_mask = (tgt == SUPP_PAD_IDX).to(device)
+#     ans_padding_mask = (ans == SUPP_PAD_IDX).to(device)
+# 
+#     return src_padding_mask, tgt_padding_mask, ans_padding_mask
 
-    return src_padding_mask, tgt_padding_mask, ans_padding_mask
-
-def get_causal_mask(model, tgt, device):
-    tgt_mask = model.transformer.generate_square_subsequent_mask(
-        tgt.shape[1], device=device
-    )
-    return tgt_mask != 0.0
+# def get_causal_mask(model, tgt, device):
+#     tgt_mask = model.transformer.generate_square_subsequent_mask(
+#         tgt.shape[1], device=device
+#     )
+#     return tgt_mask != 0.0
 
 # get the validation loss (jsut for the training loop)
 def get_val_loss_and_score(
@@ -378,11 +380,17 @@ def train_model(
         ):
             inputs_embeds = seq[0]
             labels = seq[1]
-            
+
+            inputs_attention_mask = (inputs_embeds != pad_token_id).all(dim=-1)
+            decoder_attention_mask = (labels != pad_token_id)
+
             outputs = model(
                 inputs_embeds=inputs_embeds,
+                attention_mask=inputs_attention_mask,
                 labels=labels,
+                decoder_attention_mask=decoder_attention_mask,
             )
+
             loss = outputs.loss
             preds = torch.argmax(outputs.logits, axis=-1)
             tgts = (labels != pad_token_id)
@@ -439,8 +447,8 @@ def train_model(
             # epoch_scores.append(score.item())
             # epoch_losses.append(loss.item())
         
-        # Hardcode logging epochs to every 5 (change as needed)
-        if epoch % 5 == 0:
+        # Hardcode logging epochs to every 2 (change as needed)
+        if epoch % 2 == 0:
             ################################################## OLD TRANSFORMER CODE
             # train_score = np.average(epoch_scores, weights=epoch_tgts)
             # val_loss, val_score = get_val_loss_and_score(model, val_loader, loss_fn)

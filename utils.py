@@ -8,35 +8,59 @@ import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import pyarrow as pa
 
+from pyarrow.parquet import ParquetFile
 from tqdm.auto import tqdm
 from dataclasses import dataclass
 from pathlib import Path
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import KernelPCA, PCA
 from sklearn.kernel_approximation import Nystroem
 
+##### CONSTANTS ######
+
 ##### Directory information
 ROOT = Path(__file__).resolve().parent
-MODELS_ROOT = ROOT.joinpath("models")
-ANALYSIS_ROOT = ROOT.joinpath("analysis")
-SPLITS_ROOT = ROOT.joinpath("datasets", "splits")
+MODELS_ROOT = ROOT / "models"
+ANALYSIS_ROOT = ROOT / "analysis"
+DATA_ROOT = ROOT / "data"
+# SPLITS_ROOT = ROOT / "datasets" / "splits"
+GEN_DATA_ROOT = Path("/data/deep_learning/ISLR-ML/mputils/out")
 
-##### Helpful column constants
-# BID_PRICE_COLS = [f"p{i}" for i in range(0,6)]
-# ASK_PRICE_COLS = [f"p{i}" for i in range(6,12)]
-# BID_VOL_COLS = [f"v{i}" for i in range(0,6)]
-# ASK_VOL_COLS = [f"v{i}" for i in range(6,12)]
-# TRADE_PRICE_COLS = [f"dp{i}" for i in range(0,4)]
-# TRADE_VOL_COLS = [f"dv{i}" for i in range(0,4)]
+##### File paths for base datasets
+FILE_PATHS = {
+    "supplemental_gen": {
+        "metadata": GEN_DATA_ROOT / "metadata" / "supplemental_gen.csv",
+        "landmarks": GEN_DATA_ROOT / "landmarks" / "supplemental_gen.parquet",
+        "label_map": ROOT / "supplemental_character_to_prediction_index.json",
+        "num_labels": 30,
+    },
+    "main_train": {
+        "metadata": GEN_DATA_ROOT / "metadata" / "main_train.csv",
+        "landmarks": GEN_DATA_ROOT / "landmarks" / "main_train.parquet",
+        "label_map": ROOT / "character_to_prediction_index.json",
+        "num_labels": 30,
+    },
+    "main_val": {
+        "metadata": GEN_DATA_ROOT / "metadata" / "main_val.csv",
+        "landmarks": GEN_DATA_ROOT / "landmarks" / "main_val.parquet",
+        "label_map": ROOT / "character_to_prediction_index.json",
+        "num_labels": 30,
+    },
+}
+NEW_DATASETS = list(FILE_PATHS.keys())
 
-# X_COLS = BID_PRICE_COLS + ASK_PRICE_COLS + BID_VOL_COLS + ASK_VOL_COLS + TRADE_PRICE_COLS + TRADE_VOL_COLS
-# TARGET_COLS = [f"t{i}" for i in range(0,2)]
-# PCA_COMPS = 21
-# PCA_COLS = [f"pca{i}" for i in range(PCA_COMPS)]
-# X_COLS_START = 2      # accounts for seq_ix, step_in_seq and needs_prediction
+COLS = [0,1,4,5,8,9,12,13,16,17,20]
+
+X_SH_COLS = [f"x_hand_{col}" for col in COLS]
+Y_SH_COLS = [f"y_hand_{col}" for col in COLS]
+
+START_CHAR = "<"
+END_CHAR = ">"
 
 ##### Model Constants
 BYT5_NUM_SPECIAL_TOKENS = 3
@@ -57,35 +81,12 @@ HYPERPARAMS = [
     # "step_size",
 ]
 
-###### ANALYSIS FUNCTIONS ######
-
-#################### miscellaneous functions ######
-# read_pickle
+##### miscellaneous functions
 def read_pickle(data_file):
     df = pd.read_pickle(data_file)
     return df
 
-# read_parquet
-# reads the parquet file in and sets index.
-# def read_parquet(data_file):
-#     df = pd.read_parquet(data_file).set_index("seq_ix")
-#     return df
-
-#################### Data Analysis functions ######
-# In the ending, not much was necessary
-# so we comment everything out.
-def misc_data_analysis(df):
-    pass 
-    
-    # # check a few random sequences
-    # print("Check Seq 0 (first 200 rows, bid price)")
-    # seq_0 = df[df.seq_ix == 0]
-    # with pd.option_context('display.max_rows', 200):
-    #     print(seq_0[BID_PRICE_COLS])
-
-    # print the nan count by column (then by seq if necessary)
-    # print("Check NaN count by column")
-    # print(df.isna().sum())
+##### ANALYSIS FUNCTIONS ######
 
 # gets the parameter to datapoint ratio for
 # model trained
@@ -112,236 +113,14 @@ def get_param_and_var_count(lines):
         
     return params, n
 
-#################### split dataset ######
-# get the split file name, using the split ratio argument
-# if split ratio < 0.01 or >= 1.0 the filename contains the
-# number of data points. otherwise the name contains the
-# ratio * 100
-def get_split_file_name(split_name, split_ratio, len_data, seed):
-    # logic will overwrite if sr > 0.01 and has > 2 precision
-    if split_ratio < 0.01:
-        float_str = f"n{int(split_ratio * len_data)}"
-    elif split_ratio >= 1.0:
-        float_str = f"n{int(split_ratio)}"
-    else:
-        float_str = f"ts{int(split_ratio * 100)}"
-    split_file_name = f"{split_name}_{float_str}_{seed}"
-
-    save_dir = ROOT.joinpath("datasets/splits/")
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    return save_dir.joinpath(split_file_name).with_suffix(".parquet")
-
-# splits the dataset into train and val
-def split_dataset(data_file, split_ratio, seed):
-    df = read_parquet(data_file)
-    seq_ix = list(set(df.index.tolist()))
-    
-    random.seed(seed)
-    random.shuffle(seq_ix)
-
-    train_end = int(split_ratio * len(seq_ix)) if split_ratio < 1 else int(split_ratio)
-    if train_end < 1:
-        raise ValueError("Pass a larger split ratio. Current train size is 0.")
-    
-    train_seq_ix = seq_ix[:train_end]
-    val_seq_ix = seq_ix[train_end:]
-    
-    train_df = df.loc[train_seq_ix]
-    val_df = df.loc[val_seq_ix]
-    
-    train_file_loc = get_split_file_name("train", split_ratio, len(seq_ix), seed)
-    val_file_loc = get_split_file_name("val", split_ratio, len(seq_ix), seed)
-    
-    train_df.to_parquet(train_file_loc)
-    val_df.to_parquet(val_file_loc)
-    
-    print(f"Created train file: {train_file_loc} of len {len(train_seq_ix)}")
-    print(f"Created val file: {val_file_loc} of len {len(val_seq_ix)}")
-
-#################### make small ######
-def make_small(data_file, seed):
-    df = read_parquet(data_file)
-    seq_ix = list(set(df.index.tolist()))
-    
-    random.seed(seed)
-    random.shuffle(seq_ix)
-    
-    small_end = int(0.05 * len(seq_ix))
-    if small_end < 1:
-        raise ValueError("Dataset cannot be made smaller")
-    
-    small_seq_ix = seq_ix[:small_end]
-    small_df = df.loc[small_seq_ix]
-    
-    small_file_name = "_".join([data_file.stem, f"small-{seed}"])
-    small_file_loc = data_file.parent.joinpath(small_file_name).with_suffix(".parquet")
-
-    small_df.to_parquet(small_file_loc)
-    print(f"Created small file: {small_file_loc} of len {len(small_seq_ix)}")
-
-
-#################### make model cmp charts ######
-# makes model comparison charts using interval args.
-# samples 5 datapoints for each column
-def make_plot_df(df):
-    every_fifty = np.arange(len(df)) // 50
-
-    df_mean_fifty = df.reset_index().groupby(every_fifty).mean()
-    df_mean_fifty = df_mean_fifty.set_index("seq_ix")
-    df_mean_fifty.index = df_mean_fifty.index.astype(int)
-    
-    return df_mean_fifty
-
-# add seq ix and step in seq back to a data frame
-def add_seq_ix_and_step(add_df, df_orig, step_in_seq):
-    add_df["seq_ix"] = df_orig.index.to_list()
-    add_df["step_in_seq"] = step_in_seq
-    add_df = add_df.set_index("seq_ix")
-
-    return add_df
-
-# compute metrics from target df and out tensor
-def compute_metrics(loss_fn, target, out):
-    out_tch = out[:,99:,:].reshape((-1, out.shape[-1]))
-    out_np = out_tch.detach().cpu().numpy()
-
-    y_np = target.loc[:,TARGET_COLS].to_numpy()
-    y_np = y_np.reshape((-1, SEQ_LEN, len(TARGET_COLS)))
-    y_np = y_np[:,99:,:].reshape((-1, y_np.shape[-1]))
-    y_tch = torch.from_numpy(y_np).float()
-
-    corr = weighted_pearson_correlation(y_np, out_np)
-    with torch.no_grad():
-        loss = loss_fn(out_tch, y_tch) / y_np.shape[0]
-    print(f"correlation of plotted pts: {corr}")
-    print(f"loss of plotted pts: {loss}")
-
-
-def make_model_cmp_charts(df, chkpt_path, interval=50):
-    seq_ix_list = list(set(df.index.to_list()))
-    model_files = load_model(chkpt_path, cpu=True)
-
-    model_date = chkpt_path.parts[-4]
-    model_name = "_".join([chkpt_path.parts[-2], chkpt_path.parts[-3]])
-    model_type = model_files["model"][0]
-
-    model = model_files["model"][1]
-    preprocessor = model_files["preprocessor"][1]
-    loss_fn = model_files["loss_fn"][1]
-
-    seq_ix_list.sort()
-    seq_to_plot = seq_ix_list[0:10]
-    step_in_seq = df.loc[seq_to_plot, ["step_in_seq"]].step_in_seq.to_list()
-    df_sample = df.loc[seq_to_plot, X_COLS + TARGET_COLS]
-
-    if preprocessor is not None:
-        data = preprocessor.transform(df_sample.to_numpy())
-        data = data[:, len(X_COLS):]
-        df_sample = pd.DataFrame(data, columns=TARGET_COLS+PCA_COLS)
-        sys.exit(1)
-        # data_in = torch.reshape(data_in, (5, 1000, -1)).float()
-        # target = data[:, len(X_COLS):len(X_COLS + TARGET_COLS)]
-        
-        target = pd.DataFrame(target, columns=TARGET_COLS)
-        target = add_seq_ix_and_step(target, df_sample, step_in_seq)
-    else:
-        data_in = torch.from_numpy(df_sample.to_numpy()[:,:-len(TARGET_COLS)]).float()
-        data_in = data_in.reshape((-1, SEQ_LEN, data_in.shape[-1]))
-
-        target = df_sample.loc[:,TARGET_COLS]
-        target = add_seq_ix_and_step(target, df_sample, step_in_seq)
-
-    out, _ = model.forward(data_in, return_seq=True)
-    # if model_type.startswith("ProbGRULSTMModel"):
-    #     out = out[0]
-    #     # variances = out[1][:,:,2:]
-    #     # direction = torch.where(variances > 0, 1, -1)
-    #     # out = out[0] + (torch.exp(variances) * direction)
-    compute_metrics(loss_fn, target, out)
-    out = out.reshape((-1, len(TARGET_COLS))).detach().cpu().numpy()
-
-    out = pd.DataFrame(out, columns=TARGET_COLS)
-    out = add_seq_ix_and_step(out, df_sample, step_in_seq)
-    
-    target = make_plot_df(target)
-    out = make_plot_df(out)
-    
-    for column in target.columns:
-        if column == "step_in_seq" or column == "need_prediction":
-            continue
-
-        for seq_ix in seq_to_plot:
-            plt.plot(
-                target.loc[seq_ix].step_in_seq,
-                target.loc[seq_ix][column],
-                label=f"{seq_ix} target",
-            )
-            plt.plot(
-                out.loc[seq_ix].step_in_seq,
-                out.loc[seq_ix][column],
-                label=f"{seq_ix} out",
-            )
-        
-            plt.xlabel("Seq Step")
-            plt.ylabel(column)
-            plt.title(f"{column} Seq Step (Sample {len(seq_to_plot)})")
-            
-            plt_name = ["analysis", "cmp_model_plots"]
-            plt_name.extend([model_date, model_name, f"interval{interval}", f"{column}_plot", f"{seq_ix}"])
-            
-            plt_path = ROOT.joinpath(*plt_name).with_suffix(".png")
-            plt_path.parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(plt_path)
-            
-            plt.clf()
-
-#################### make timeline charts ######
-# makes timeline charts using interval args.
-# samples 5 datapoints for each column
-def make_timeline_charts(df, preprocess=False, interval=50, pca=False):
-    seq_ix_list = list(set(df.index.to_list()))
-
-    seq_ix_list.sort()
-    seq_to_plot = seq_ix_list[500:505]
-
-    df_sample = df.loc[seq_to_plot]
-    df_mean_fifty = make_plot_df(df_sample)
-
-    for column in df_mean_fifty.columns:
-        if column == "step_in_seq" or column == "need_prediction":
-            continue
-
-        for seq_ix in seq_to_plot:
-            plt.plot(
-                df_mean_fifty.loc[seq_ix].step_in_seq,
-                df_mean_fifty.loc[seq_ix][column],
-                label=str(seq_ix),
-            )
-        
-        plt.xlabel("Seq Step")
-        plt.ylabel(column)
-        plt.title(f"{column} Seq Step (Sample {len(seq_to_plot)})")
-        
-        plt_name = ["analysis", "interval_plots"]
-        if pca:
-            plt_name.append("pca")
-        plt_name.extend([f"interval{interval}", f"{column}_plot"])
-        plt_name[-1] += "_pp" if preprocess else ""
-        
-        plt_path = ROOT.joinpath(*plt_name).with_suffix(".png")
-        plt_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(plt_path)
-        
-        plt.clf()
-
+# Check log file for args and regex extract the args
 def get_args_from_output(lines):
     for ln in lines:
         if "Namespace" in ln:
             match = re.search(r"Namespace.+$", ln)
             if match:
                 all_hyperparams = match.group()
-                all_hyperparams = all_hyperparams.replace(str(SPLITS_ROOT) + "/", "")
+                all_hyperparams = all_hyperparams.replace(str(DATA_ROOT) + "/", "")
                 hyperparams = ""
                 n_str = "n0"
 
@@ -359,94 +138,7 @@ def get_args_from_output(lines):
 
     return "n0", ""
 
-#################### UNFINISHED ######
-#################### make gradient plots ######
-# note that wrapper functions are used for Python closure
-# so that we can pass arguments.
-def load_model(chkpt_path, cpu=False):
-    if torch.cuda.is_available() and not cpu:
-        model_files = torch.load(chkpt_path, weights_only=False, map_location=torch.device("cuda"))
-    else:
-        model_files = torch.load(chkpt_path, weights_only=False, map_location=torch.device("cpu"))
-    
-    return model_files
-
-def get_args_from_log_file(log_file):
-    with open(log_file, "r") as f:
-        args = f.readline()
-    return args
-
-def get_data_file_from_args(args):
-    df_match = re.search(r"data_file=PosixPath\(.[^\)]*[\)]{1}", args)
-    pca_match = re.search(r"use_pca=.[^,]*,", args)
-
-    data_file = df_match.group()[21:-2]
-    use_pca = bool(pca_match.group()[8:-1])
-    
-    df = read_parquet(data_file)
-    _, pipe = preprocess(df, pca=use_pca)
-    return df
-    
-
-# from torch website
-def hook_forward(module_name, grads, hook_backward):
-    def hook(module, args, output):
-        """Forward pass hook which attaches backward pass hooks to intermediate tensors"""
-        output.register_hook(hook_backward(module_name, grads))
-    return hook
-
-def hook_backward(module_name, grads):
-    def hook(grad):
-        """Backward pass hook which appends gradients"""
-        grads.append((module_name, grad))
-    return hook
-
-def get_all_layers(model, hook_forward, hook_backward):
-    """Register forward pass hook (which registers a backward hook) to model outputs
-
-    Returns:
-        - layers: a dict with keys as layer/module and values as layer/module names
-                  e.g. layers[nn.Conv2d] = layer1.0.conv1
-        - grads: a list of tuples with module name and tensor output gradient
-                 e.g. grads[0] == (layer1.0.conv1, tensor.Torch(...))
-    """
-    layers = dict()
-    grads = []
-    for name, layer in model.named_modules():
-        # skip Sequential and/or wrapper modules
-        if any(layer.children()) is False:
-            layers[layer] = name
-            layer.register_forward_hook(hook_forward(name, grads, hook_backward))
-    return layers, grads
-
-def mini_train(model, optimizer, loss_fn, grads):
-    epochs = 10
-    for epoch in range(epochs):
-        # important to clear, because we append to
-        # outputs everytime we do a forward pass
-        grads.clear()
-        
-        optimizer.zero_grad()
-        y_pred = model(x)
-        
-        loss = loss_fn(y_pred, y)
-        loss.backward()
-
-        optimizer.step()
-
-def make_gradient_plots(chkpt_path):
-    model_files = load_model(chkpt_path)
-    optimizer, model = model_files["optimizer"][1], model_files["model"][1]
-    # if model_files["model"][0].startswith("ProbGRULSTM"):
-    loss_fn = model_files["loss_fn"][1]
-
-    args_str = get_args_from_log_file(chkpt_path.parent.joinpath("log.txt"))
-    df = get_data_file_from_args(args_str)
-
-    _, grads = get_all_layers(model, hook_forward, hook_backward)
-    mini_train(model, df, optimizer, loss_fn, grads)
-    
-#################### make loss plots ######
+##### make loss plots
 # gets the epoch and loss variables to make
 # a simple matplotlib chart.
 def get_loss_and_score_by_epoch(lines):
@@ -525,236 +217,419 @@ def make_loss_plots(model_dir):
         
         plt.clf()
 
-#################### data processing functions ######
+##### data processing functions
 def df_to_bytes(df, eos_token_id=1):
-    def df_cols_to_bytes(row):
-        row.phrase = "".join([reverse_char_map[idx] for idx in row.phrase[1:-1]])
+    def phrase_to_bytes(row):
+        # row.phrase = "".join([reverse_char_map[idx] for idx in row.phrase[1:-1]])
         row.phrase = list(row.phrase.encode("utf-8"))
         row.phrase = [enc + BYT5_NUM_SPECIAL_TOKENS for enc in row.phrase] + [eos_token_id]
 
-        # all_landmarks = []
-        # for frame in row.all_landmarks:
-        #     new_landmarks = [round(val*100).to_bytes(signed=True) for val in frame]
-        #     all_landmarks.extend(new_landmarks)
-
-        # row.all_landmarks = list(b"".join(all_landmarks))
-        # row.all_landmarks = [enc+BYT5_NUM_SPECIAL_TOKENS for enc in row.all_landmarks] + [eos_token_id]
-
         return row
     
-    with open("supplemental_character_to_prediction_index.json", "r") as f:
-        char_map = json.load(f)
-        reverse_char_map = {char_map[key]:key for key in char_map}
-
-        df = df.apply(df_cols_to_bytes, axis=1)
+    # with open("supplemental_character_to_prediction_index.json", "r") as f:
+    #     char_map = json.load(f)
+    #     reverse_char_map = {char_map[key]:key for key in char_map}
+    df = df.apply(phrase_to_bytes, axis=1)
 
     return df
 
-##### PCA Results #####
-# pca on ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9', 'p10', 'p11', 'v0', 'v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'dp0', 'dp1', 'dp2', 'dp3', 'dv0', 'dv1', 'dv2', 'dv3']
-# variance ratios: [2.17503404e-01 1.09468576e-01 7.57392353e-02 6.28164566e-02
-#  5.14800291e-02 4.41038505e-02 4.06376729e-02 4.03281762e-02
-#  3.79259263e-02 3.29952990e-02 3.29014272e-02 3.13207802e-02
-#  2.96195921e-02 2.70458917e-02 2.55823615e-02 2.35667024e-02
-#  2.29956895e-02 2.15952423e-02 1.98581638e-02 1.73981819e-02
-#  1.30439505e-02 6.00410772e-03 4.55362222e-03 3.41339648e-03
-#  2.50729279e-03 1.49543049e-03 1.30988965e-03 1.06017397e-03
-    #  7.53418304e-04 5.51940936e-04 3.03332923e-04 1.20785941e-04]
+###### PREPROCESSING FUNCTIONS ######
 
-# pca on ['p0', 'p1', 'p2', 'p3', 'p4', 'p5']
-# variance ratios: [0.67831032 0.2077182  0.05442041 0.02965447 0.02108016 0.00881643]
+##### Boolean helpers
+# checks if doing loocv
+def is_pt_split(participant_grp_name):
+    # Could be None if that is passed as an arg.
+    return participant_grp_name == "pt-split"
 
-# pca on ['v0', 'v1', 'v2', 'v3', 'v4', 'v5']
-# variance ratios: [0.30043638 0.21383082 0.16205762 0.11778383 0.11419606 0.09169528]
+# checks if doing loocv (during training)
+def is_loocv(participant_grp_name):
+    # If None, not doing loocv. else it should be the pt id.
+    # return loocv_pt is not None
+    return participant_grp_name is not None and "loocv" in participant_grp_name
 
-# pca on ['p6', 'p7', 'p8', 'p9', 'p10', 'p11']
-# variance ratios: [0.56647158 0.30512466 0.06667396 0.02923335 0.02235182 0.01014464]
+# checks if doing loocv
+def is_ntuples(participant_grp_name):
+    # Could be None if that is passed as an arg.
+    return participant_grp_name == "ntuples"
 
-# pca on ['v6', 'v7', 'v8', 'v9', 'v10', 'v11']
-# variance ratios: [0.32323046 0.16757107 0.14316814 0.13651361 0.12785393 0.10166279]
+# Check is preprocess is pulling all data or splitting (train/test/val)
+def use_all_data(train_ratio):
+    return train_ratio == 0.0 or train_ratio == 1.0
 
-# pca on ['dp0', 'dp1', 'dp2', 'dp3']
-# variance ratios: [0.55558456 0.28964016 0.08860935 0.06616592]
+# Return filename suffix for data file preprocessed by preprocess.py
+###!! For now, get_data_file_name does not rely on use_pca for since PCA
+###!! is done after preprocessing is complete (even though it is techni-
+###!! cally a preprocessing step).
+# def get_data_file_name(args, pca_in_name=True):
+def get_data_file_name(args):
+    # for now, return data file without .train/.test/.val ext if passed
+    # if args.data_file is not None:
+    #     data_file = os.path.basename(args.data_file)
+    #     return data_file.replace(".pkl.train", "")
 
-# pca on ['dv0', 'dv1', 'dv2', 'dv3']
-# variance ratios: [0.42635404 0.33645795 0.15317949 0.08400852]
-
-#################### PCA ######
-# runs pca and prints the components
-# def run_pca(df, seed=673, cols=X_COLS):
-#     print(f"running pca on input cols")
-#     X = df[cols]
-# 
-#     solver = Pipeline([
-#         ("pca_step", PCA()),
-#     ])
-#     X_pca = solver.fit_transform(X)
-#     
-#     var_ratios = solver["pca_step"].explained_variance_ratio_
-#     print(f"variance ratios: {var_ratios}")
-#     print()
-
-#################### Preprocesses the data ######
-# preprocess by scaling the data and pca (if bool)
-def preprocess(df, pca=False):
-    data = df[X_COLS + TARGET_COLS].to_numpy()
+    name_params = ["data", f"{args.dataset}"]
+    if args.na_threshold < 1.0:
+        name_params.append(f"na-thr{args.na_threshold}")
+    if args.dropna:
+        name_params.append("drop-na")
+    if args.interpolate_val is not None:
+        name_params.append(f"lininterp{args.interpolate_val}")
+    if not(use_all_data(args.train_ratio)):
+         name_params.append(f"sd{args.seed}")
     
-    transformers = [
-        ("z_norm", StandardScaler(), slice(len(X_COLS + TARGET_COLS))),
-    ]
+    # Multiple possibilities
+    #  If 1 pt id use the pt id for the name if a group isn't given
+    #  Use the grp name and pt id otherwise.
+    #  If more than 1 pt id, then use the group only.
+    #  If no pt ids, then no additional name
+    if len(args.participant_id) == 1:
+        pt_id = args.participant_id[0]
+        if args.participant_grp_name is None:
+            name_params.append(f"pt-{pt_id}")
+        else:
+            name_params.append(f"{args.participant_grp_name}-{pt_id}")
+    elif len(args.participant_id) > 0 or is_pt_split(args.participant_grp_name):
+        name_params.append(f"{args.participant_grp_name}")
 
-    if pca:
-        transformers.append(
-            ("pca", PCA(n_components=PCA_COMPS), slice(len(X_COLS))),
-        )
+    if args.use_polar:
+        name_params.append("polar")
 
-    pipe = ColumnTransformer(
-        transformers,
-        remainder="passthrough",
-        sparse_threshold=0.0,
-        verbose_feature_names_out=False,
-    )
-    # pipe.set_output(transform="pandas")
-    scaled_data = pipe.fit_transform(data)
+    if args.use_delta:
+        name_params.append("delta")
+    
+    # if args.use_pca and pca_in_name:
+    #     name_params.append(f"pca{args.n_components}")
 
-    if pca:
-        # set new pca col names. drop old X cols
-        df = df.drop(columns=X_COLS)
-        # df[pca_cols + TARGET_COLS] = scaled_data[pca_cols + TARGET_COLS]
-        df[PCA_COLS] = scaled_data[:, slice(len(X_COLS + TARGET_COLS), None)]
-        df[TARGET_COLS] = scaled_data[:, slice(len(X_COLS), len(X_COLS + TARGET_COLS))]
-        
-        # rearrange cols and put target at the end
-        new_col_order = list(df.columns[:-(PCA_COMPS + len(TARGET_COLS))]) + \
-             list(df.columns[-PCA_COMPS:]) + TARGET_COLS
-        df = df[new_col_order]
+    if args.make_left_handed:
+        name_params.append("lh")
     else:
-        df[X_COLS + TARGET_COLS] = scaled_data
-
-    return df, pipe
+        name_params.append("rh")
     
-#################### Measure functions ######
-def weighted_pearson_correlation(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Calculates the Weighted Pearson Correlation Coefficient.
+    if args.data_file_name_ext is not None:
+        name_params.append(args.data_file_name_ext)
 
-    This metric emphasizes performance on data points with larger target amplitudes
-    (larger price movements) by using the absolute value of the target as a sample weight.
+    data_file_name = "_".join(name_params)
+    return data_file_name
 
-    Predictions are clipped to the range [-6, 6] before calculation to prevent
-    outliers from dominating the metric.
+##### Batching/Splitting Dataset helpers
+# Split into train/val sets by train_ratio. Then split against into traun/val/test sets
+# using train_ratio again.
+def get_train_test_val_split(data, train_ratio, split_once=False, seed=7248):
+    if split_once:
+        train, val = train_test_split(data, train_size=train_ratio, stratify=data["participant_id"], random_state=seed)
+        return train, val, None
+    else:
+        train, test = train_test_split(data, train_size=train_ratio, stratify=data["participant_id"], random_state=seed)
+        train, val = train_test_split(train, train_size=train_ratio, stratify=train["participant_id"], random_state=seed)
+        return train, val, test
 
-    Args:
-        y_true: Ground truth target values (numpy array).
-        y_pred: Predicted values (numpy array).
+##### Label Manipulation helpers
+# Loads label map (in reverse, if needed). The label map
+# maps characters to indices and vice verse for label encoding
+def load_label_map(dataset, reverse=False):
+    with open(FILE_PATHS[dataset]["label_map"], "r") as f:
+        label_map = json.load(f)
+    
+    if reverse:
+        keys = list(label_map.keys())
+        label_map = {label_map[key]:key for key in keys}
 
-    Returns:
-        float: Weighted Pearson correlation coefficient.
-    """
-    # Clip predictions to valid range [-6, 6]
-    y_pred_clipped = np.clip(y_pred, -6.0, 6.0)
+    return label_map
 
-    # Calculate weights based on target amplitude
-    weights = np.abs(y_true)
-    weights = np.maximum(weights, 1e-8)
+# Given a list of indices and a label map,
+# this function returns the translated label
+def get_text_from_idx(idx_label, label_map):
+    label = ""
+    for char_idx in idx_label:
+        label += label_map[char_idx]
+    return label
 
-    # Calculate weighted means
-    sum_w = np.sum(weights)
-    if sum_w == 0:
-        return 0.0
-
-    mean_true = np.sum(y_true * weights) / sum_w
-    mean_pred = np.sum(y_pred_clipped * weights) / sum_w
-
-    # Calculate weighted deviations
-    dev_true = y_true - mean_true
-    dev_pred = y_pred_clipped - mean_pred
-
-    # Calculate weighted covariance
-    cov = np.sum(weights * dev_true * dev_pred) / sum_w
-
-    # Calculate weighted variances
-    var_true = np.sum(weights * dev_true**2) / sum_w
-    var_pred = np.sum(weights * dev_pred**2) / sum_w
-
-    # Compute correlation
-    if var_true <= 0 or var_pred <= 0:
-        return 0.0
-
-    corr = cov / (np.sqrt(var_true) * np.sqrt(var_pred))
-    return float(corr)
-
-# Modeling functions ######
-@dataclass
-class DataPoint:
-    seq_ix: int
-    step_in_seq: int
-    need_prediction: bool
-    state: np.ndarray
-
-
-class PredictionModel:
-    def predict(self, data_point: DataPoint) -> np.ndarray:
-        # return dummy prediction
-        return np.zeros(2)
-
-
-class ScorerStepByStep:
-    def __init__(self, dataset_path: str):
-        self.dataset = pd.read_parquet(dataset_path)
-
-        # Calc feature dimension: first 3 columns are seq_ix, step_in_seq & need_prediction
-        # Total columns: 3 metadata + 32 features + 2 targets = 37
-        # Features are cols [3:35]
-        self.dim = 2
-        self.features = self.dataset.columns[3:35]
-        self.targets = self.dataset.columns[35:]
-
-    def score(self, model: PredictionModel) -> dict:
-        predictions = []
-        targets = []
-
-        prediction = None
-
-        # Iterate over numpy array for speed
-        for row in tqdm(self.dataset.values):
-            seq_ix = row[0]
-            step_in_seq = row[1]
-            need_prediction = row[2]
-            lob_data = row[3:35]  # 32 features
-            labels = row[35:]     # 2 targets
-            
-            data_point = DataPoint(seq_ix, step_in_seq, need_prediction, lob_data)
-            prediction = model.predict(data_point)
-            
-            self.check_prediction(data_point, prediction)
-            if prediction is not None:
-                predictions.append(prediction)
-                targets.append(labels)
-
-        # report metrics
-        return self.calc_metrics(np.array(predictions), np.array(targets))
-
-    def check_prediction(self, data_point: DataPoint, prediction: np.ndarray):
-        if not data_point.need_prediction:
-            if prediction is not None:
-                raise ValueError(f"Prediction is not needed for {data_point}")
-            return
-
-        if prediction is None:
-            raise ValueError(f"Prediction is required for {data_point}")
-
-        if prediction.shape[0] != self.dim:
-            raise ValueError(
-                f"Prediction has wrong shape: {prediction.shape[0]} != {self.dim}"
-            )
-
-    def calc_metrics(self, predictions: np.ndarray, targets: np.ndarray) -> dict:
-        scores = {}
-        for ix_target, target_name in enumerate(self.targets):
-            scores[target_name] = weighted_pearson_correlation(
-                targets[:, ix_target], predictions[:, ix_target]
-            )
-        scores["weighted_pearson"] = np.mean(list(scores.values()))
-        return scores
+##### dataset conversion/reshape functions
+# Convert raw data to numpy (or in the future, torch) arrays
+# cross_val is only used when processing loocv data
+def process_metadata(
+    metadata,
+    participant_id=[],
+    participant_grp_name=None,
+    dataset="supplemental_gen",
+    seed=1248,
+    cross_val=False,
+):
+    def add_groups(row):
+        # index_phrase = []
+        # row.phrase = START_CHAR + row.phrase + END_CHAR
         
+        if row.participant_id in groups:
+            row['grp'] = groups[row.participant_id]
+
+        # for ch in new_phrase:
+        #     index_phrase.append(label_map[ch])
+        # row["phrase"] = index_phrase
+        return row
+    
+    # groups variable is only used for n_tuples grouping
+    groups = {}
+    # label_map = load_label_map(dataset)
+    new_metadata = metadata.copy()
+    if is_loocv(participant_grp_name):
+        pt = participant_id[0]
+        if cross_val:
+            # make test set using this option
+            new_metadata = metadata.loc[metadata["participant_id"].isin([pt])]
+        else:
+            # this is for main loocv dataset
+            new_metadata = metadata.loc[~metadata["participant_id"].isin([pt])]
+
+    elif is_ntuples(participant_grp_name):
+        n = int(participant_id[0])
+        participants = list(set(metadata.participant_id.to_list()))
+        random.shuffle(participants)
+        
+        groups_save = {}
+        for i in range(0, len(participants), n):
+            ntup = tuple(participants[i:i+n])
+            grp_name = f"grp.rnd{str(int(i / n))}.{n}"
+            for pt in ntup:
+                groups[pt] = grp_name
+            groups_save['|'.join(ntup)] = grp_name
+        
+        with open(f"output/grp.rnd.{n}_{dataset}_sd{seed}.json", "w") as f:
+            json.dump(groups_save, f, indent=4)
+
+        new_metadata = new_metadata.apply(add_groups, axis=1)
+        
+    elif len(participant_id) > 0:
+        new_metadata = metadata.loc[metadata["participant_id"].isin(participant_id)]
+    
+    # new_data = new_metadata.copy()[["phrase", "participant_id"]]
+    # new_data = new_data.apply(phrase_to_indices, axis=1)
+    
+    return new_metadata[["phrase", "participant_id"]]
+
+# Convert all data so that frames are joined into a single list
+def process_all_data(data):
+    seq_ids = data.index.values.tolist()
+    data["all_landmarks"] = data.values.tolist()
+    
+    new_data = data.copy()[["all_landmarks"]]
+    new_data = new_data.groupby(["sequence_id"]).agg(lambda x: list(x))
+    
+    new_seq_ids = new_data.index.values.tolist()
+    return new_data
+
+##### data alteration functions
+# Take the deltas.
+def take_deltas(data):
+    def take_delta(row):
+        new_row = row.iloc[1:].reset_index() - row.iloc[:-1].reset_index()
+        return new_row
+        
+    data = data.groupby("sequence_id").apply(take_delta)
+    data = data.drop(["index", "sequence_id"], axis=1)
+    
+    # reset index twice (first for group by level then for numbering)
+    data = data.reset_index(level="sequence_id").reset_index(drop=True)
+    return data
+
+# Center hands data around the 0 (wrist) data point.
+def center_hands(data):
+    data[X_SH_COLS] = data[X_SH_COLS].values - data["x_hand_0"].values[:,None]
+    data[Y_SH_COLS] = data[Y_SH_COLS].values - data["y_hand_0"].values[:,None]
+
+    data = data.drop(labels=["x_hand_0", "y_hand_0"], axis=1)
+    return data
+
+# Make sure that only any sequence with greater than threshold < len(landmarks) / len(sequence) is allowed
+def threshold_data(data, threshold=1):
+    def filter_rows(row):
+        return len(row.all_landmarks) / len(row.phrase) >= threshold
+
+    data = data[data.apply(filter_rows, axis=1)]
+    return data
+
+##### read and save data functions
+# get nan percentage
+def get_na_pct(seq, na_threshold=1.0):
+    total_count = seq.x_right_0.shape[0]
+    na_count = seq.x_right_0.isna().sum()
+    na_pct = na_count / total_count
+    return True if na_pct >= na_threshold else False
+
+# threshold na sequences
+def threshold_na_sequences(data, na_threshold=1.0):
+    data_counts = data.groupby(level="sequence_id").apply(
+        get_na_pct,
+        na_threshold=na_threshold,
+    )
+
+    data_counts = pd.DataFrame(data_counts, columns=["remove_seq"])
+    data = data.merge(data_counts, how="inner", on="sequence_id")
+    
+    data = data[~data.remove_seq].drop("remove_seq", axis=1)
+    return data
+
+# do interpolation on rows
+def interpolate(row, interpolate_val=0): 
+    X = row.x_right_0 == 0.0
+    if X.all():
+        return row
+
+    X = X.to_list()
+    start = X.index(False)
+    end = len(X) - (1 + X[::-1].index(False))
+    if start == end:
+        return row
+    
+    row = row.reset_index(drop=True)
+    row_nan = row.iloc[start:end+1].replace(0.0, np.nan)
+    row_nan = row_nan.interpolate()
+
+    if interpolate_val == 0:
+        return pd.concat([row.iloc[:start], row_nan, row.iloc[end+1:]])
+
+    fwd_row = row_nan[1:].reset_index(drop=True)
+    bck_row = row_nan[:-1].reset_index(drop=True)
+    row_sum = fwd_row + bck_row
+
+    interp_row = (row_sum / 2)
+    subset_row = row_nan.reset_index(drop=True)
+    
+    interp_row["order"] = list(range(1, interp_row.shape[0] * 2, 2))
+    subset_row["order"] = list(range(0, subset_row.shape[0] * 2, 2))
+    interp_row = interp_row.set_index("order")
+    subset_row = subset_row.set_index("order")
+    
+    new_row = pd.concat([interp_row, subset_row])
+    new_row = new_row.sort_index().reset_index().drop("order", axis=1)
+    new_row = pd.concat([row.iloc[:start], new_row, row.iloc[end+1:]])
+
+    return new_row
+
+# read parquet file
+###!! this function assumes the data is already right handed
+###!! it also centers hands around the wrist point.
+###!! For now, flip the y coordinates (1 - y) since they appear
+###!! to be flipped.
+def read_parquet_data(
+    dataset,
+    na_threshold=1.0,
+    dropna=True,
+    interpolate_val=None,
+    use_polar=False,
+    use_delta=False,
+    debug=False,
+):
+    if debug:
+        ## Use code below when developing or debugging
+        pf = ParquetFile(FILE_PATHS[dataset]["landmarks"])
+        first_ten_rows = next(pf.iter_batches(batch_size = 100000))
+        all_data = pa.Table.from_batches([first_ten_rows]).to_pandas()
+    else:
+        ## Use below line for main code.
+        all_data = pd.read_parquet(FILE_PATHS[dataset]["landmarks"])
+    
+    all_data = threshold_na_sequences(all_data, na_threshold=na_threshold)
+    if dropna and interpolate is None:
+        all_data = all_data.drop(columns=["frame"]).dropna(axis=0)
+    else:
+        ## Code for interpolation
+        all_data = all_data.drop(columns=["frame"]).fillna(0.0)
+        if interpolate is not None:
+            all_data = all_data.groupby("sequence_id").apply(
+                interpolate,
+                interpolate_val=interpolate_val
+            )
+            all_data = all_data.reset_index().drop("level_1", axis=1).set_index("sequence_id")
+
+        if dropna:
+            all_data = all_data[~(all_data == 0).all(axis=1)]
+ 
+    colmap = {col:col.replace("right","hand") for col in all_data.columns}
+    all_data = all_data.rename(columns=colmap).reset_index()
+    
+    #!!! This line needs to be treated with caution. may not be needed if upstream
+    #!!! mediapipe landmark generation is fixed. TODO
+    all_data[Y_SH_COLS] = np.where(all_data[Y_SH_COLS] == 0, 0, 1 - all_data[Y_SH_COLS])
+
+    all_data = center_hands(all_data).loc[:,["sequence_id"] + X_SH_COLS[1:] + Y_SH_COLS[1:]]
+    all_data.sequence_id = all_data.sequence_id.astype(int)
+    if use_polar:
+        for x_col, y_col in zip(X_SH_COLS[1:], Y_SH_COLS[1:]):
+            r_col = np.hypot(
+                all_data[x_col],
+                all_data[y_col],
+            )
+            theta_col = np.arctan2(
+                all_data[y_col],
+                all_data[x_col],
+            )
+
+            all_data[x_col] = r_col
+            all_data[y_col] = theta_col / np.pi
+    
+    if use_delta:
+        all_data = take_deltas(all_data)
+
+    return all_data
+
+# Saves train/test/val/all data into a pickle file
+def save_data(data_file_name, train=None, val=None, test=None, all_data=None):
+    if train is not None:
+        train.to_parquet(data_file_name.with_suffix(".pq.train"))
+
+    if val is not None:
+        val.to_parquet(data_file_name.with_suffix(".pq.val"))
+
+    if test is not None:
+        test.to_parquet(data_file_name.with_suffix(".pq.test"))
+
+    if all_data is not None:
+        all_data.to_parquet(data_file_name.with_suffix(".pq.all"))
+
+    print(f"Saved data file (root name; add ext train,test,val,all): {data_file_name}")
+
+# ##### pca and friends
+# # get landmark data as a list with sequence lengths
+# def get_landmark_data(df):
+#     data = df.all_landmarks.to_list()
+#     seq_lens = [len(seq) for seq in data]
+# 
+#     data = np.concatenate(data, axis=0)
+#     return data, seq_lens
+# 
+# # get pca features (transform data then use seq_lens to partition it into seqs again)
+# def get_pca_features(pipe, df, data, seq_lens):
+#     data = pipe.transform(data)
+#     new_data = []
+#     start = 0
+# 
+#     for length in seq_lens:
+#         end = start + length
+#         new_data.append(data[start:end])
+#         start = end
+# 
+#     df.all_landmarks = new_data
+#     return df
+# 
+# # run and save PCA data
+# def pca(file_prefix, file_suffix, args, pipe=None):
+#     full_prefix = Path(ROOT).joinpath("data", file_prefix)
+# 
+#     file = full_prefix.with_suffix(file_suffix)
+#     df = pd.read_pickle(file)
+#     data, lens = get_landmark_data(df)
+# 
+#     if not pipe:
+#         pipe = Pipeline([
+#             ("pca_solver", PCA(n_components=args.n_components))
+#         ])
+#         pipe.fit(data)
+#     df = get_pca_features(pipe, df, data, lens)
+# 
+#     new_prefix = get_data_file_name(args)
+#     pca_path = Path(ROOT).joinpath("data", new_prefix)
+#     pca_path = pca_path.with_suffix(file_suffix)
+# 
+#     df.to_pickle(pca_path)
+#     print(f"Saved PCA Transform: {pca_path}")
+#     return pipe

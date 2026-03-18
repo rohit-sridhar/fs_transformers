@@ -1,6 +1,9 @@
 import argparse
 import sys
 from pathlib import Path
+from utils import (
+    NEW_DATASETS
+)
 
 # Choices for analysis args
 ANALYSIS_CHOICES = [
@@ -91,7 +94,7 @@ def is_required(arg_name):
         return arg_has_val(["-at", "--analysis_type"], ["get_basic_stats"])
     elif arg_name == "data_file":
         return arg_has_val(["-at", "--analysis_type"], ["cmp_model_out", "get_basic_stats", "split_val", "make_small"]) \
-                or is_script(["train.py"])
+                or is_script(["train.py", "test.py"])
     elif arg_name == "analysis_type":
         return is_script(["analysis.py"])
     elif arg_name == "model_sub_root" or arg_name == "model_type":
@@ -128,7 +131,7 @@ def parse_args():
         "-op",
         "--optimizer",
         type=str,
-        choices=["Adam", "RMSprop"],
+        choices=["Adam", "RMSprop", "Adafactor"],
         default="Adam",
         help="optimizer type for training",
     )
@@ -169,51 +172,28 @@ def parse_args():
         help="learning rate for training (train LSTM/ConvLSTM)",
     )
 
-    # GRU/LSTM/ConvLSTM Args
-    # parser.add_argument(
-    #     "-hs",
-    #     "--hidden_size",
-    #     type=ranged_int(low=1),
-    #     default=128,
-    #     help="num layers for lstm model (train LSTM/ConvLSTM)",
-    # )
-    # parser.add_argument(
-    #     "-nl",
-    #     "--num_layers",
-    #     type=ranged_int(low=1),
-    #     default=3,
-    #     help="num layers for lstm model (train LSTM/ConvLSTM)",
-    # )
-    # parser.add_argument(
-    #     "-dp",
-    #     "--dropout",
-    #     type=ranged_float(0.0, 1.0, True, False),
-    #     default=0.0,
-    #     help="use dropout with LSTM (train LSTM/ConvLSTM)",
-    # )
-
-    # ConvGRU Only Args
-    # parser.add_argument(
-    #     "-ks",
-    #     "--kernel_size",
-    #     type=ranged_int(low=2),
-    #     default=5,
-    #     help="kernel size for convolutions (train ConvLSTM)",
-    # )
-    # parser.add_argument(
-    #     "-oc",
-    #     "--out_channels",
-    #     type=ranged_int(low=0),
-    #     default=0,
-    #     help="out channels for conv layer. set to 0 to use in_channels (train ConvLSTM)",
-    # )
-    # parser.add_argument(
-    #     "-st",
-    #     "--stride",
-    #     type=ranged_int(low=1),
-    #     default=1,
-    #     help="out channels for conv layer. set to 0 to use in_channels (train ConvLSTM)",
-    # )
+    # testing Args
+    parser.add_argument(
+        "-tt",
+        "--test_type",
+        type=str,
+        choices=["gen", "fwd", "grd"],
+        default="gen",
+        help="how to search for the output seq. pass 'fwd' for sanity checking",
+    )
+    parser.add_argument(
+        "-gpu",
+        "--use_gpu",
+        action="store_true",
+        help="whether to use the GPU during test time (doesn't apply to trsining)",
+    )
+    parser.add_argument(
+        "-n",
+        "--n",
+        type=ranged_int(low=0),
+        default=5,
+        help="sample size for testing. if 0 uses the entire dataset.",
+    )
 
     # analysis args
     parser.add_argument(
@@ -225,6 +205,7 @@ def parse_args():
         help="analysis type to run. (analysis)",
     )
     parser.add_argument(
+        "-iv",
         "--intervals",
         type=int,
         nargs="+",
@@ -252,6 +233,95 @@ def parse_args():
         default=0.9,
         help="split ratio when doing train/test split. pass val in (0,1) for ratio and >= 1 for n samples (analysis)",
     )
+    
+    # preprocess args
+    parser.add_argument(
+        "-so",
+        "--split_once",
+        action="store_true",
+        help="split into just train/val (preprocess)",
+    )
+    parser.add_argument(
+        "-up",
+        "--use_polar",
+        action="store_true",
+        help="use polar coordinates instead (preprocess)",
+    )
+    parser.add_argument(
+        "-ud",
+        "--use_delta",
+        action="store_true",
+        help="use deltas between rows (preprocess)",
+    )
+    parser.add_argument(
+        "-dna",
+        "--dropna",
+        action="store_true",
+        help="Drop NA values. If False, will replace with 0s. if interpolation is not None, interpolates first then drops na. (preprocess)",
+    )
+    parser.add_argument(
+        "-mlh",
+        "--make_left_handed",
+        action="store_true",
+        help="Make the data left handed instead of right handed (preprocess)",
+    )
+    # parser.add_argument(
+    #     "-au",
+    #     "--analyze_users",
+    #     action="store_true",
+    #     help="analyze users. (preprocess)",
+    # )
+    parser.add_argument(
+        "-ip",
+        "--interpolate_val",
+        type=ranged_int(0),
+        default=None,
+        help="Insert average between each non-zero frame if > 0. Only fills in nans if 0 is passed. (preprocess)",
+    )
+    parser.add_argument(
+        "-nthr",
+        "--na_threshold",
+        type=ranged_float(0.0, 1.0, False, True),
+        default=1.0,
+        help="Filter out sequences with greater than na_threshold pct na frames (preprocess)",
+    )
+    parser.add_argument(
+        "-tr",
+        "--train_ratio",
+        type=ranged_float(0.0, 1.0, True, True),
+        default=0.9,
+        help="Percentage of sequences for training. Whole set is split train_ratio/1-train_ratio for test/test. Train set is further split by train_ratio for train/val (preprocess)",
+    )
+    parser.add_argument(
+        "-pt",
+        "--participant_id",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Filters data to specific participant. If an empty list, uses all participants (preprocess)",
+    )
+    parser.add_argument(
+        "-ptgrp",
+        "--participant_grp_name",
+        type=str,
+        default=None,
+        help="Name for participant group (preprocess)",
+    )
+    parser.add_argument(
+        "-ds",
+        "--dataset",
+        type=str,
+        default="supplemental_gen",
+        choices=NEW_DATASETS,
+        help="Source dataset to preprocess (preprocess)",
+    )
+    parser.add_argument(
+        "-ne",
+        "--data_file_name_ext",
+        type=str,
+        default=None,
+        help="data file name extension when outputting preprocessed pickle. this is not a file extension. (preprocess)",
+    )
 
     # Shared
     parser.add_argument(
@@ -260,24 +330,30 @@ def parse_args():
         action="store_true",
         help="whether or not to run pca. keeps 21 components (shared)",
     )
-    # parser.add_argument(
-    #     "-pp",
-    #     "--preprocess",
-    #     action="store_true",
-    #     help="whether or not to preprocess before analysis/training (shared)",
-    # )
+    parser.add_argument(
+        "-dbg",
+        "--debug",
+        action="store_true",
+        help="run in debug mode (smaller datasets, verbose)",
+    )
+    parser.add_argument(
+        "-nc"
+        "--n_components",
+        type=ranged_int(1),
+        default=10,
+        help="n components for pca (shared)",
+    )
     parser.add_argument(
         "-sd",
         "--seed",
         type=int,
-        # default=465, # Seed learns seq 52182 and 55278 perfectly with greedy decoding (sometimes, at least)
-        default=248, # Seed learns seq 52182 and 55278 perfectly with greedy decoding (sometimes, at least)
+        default=1248,
         help="seed for randomness (shared)",
     )
     parser.add_argument(
         "-bp",
         "--bar_position",
-        type=int,
+        type=ranged_int(0),
         default=0,
         help="bar position for tqdm when multiprocessing (shared)",
     )

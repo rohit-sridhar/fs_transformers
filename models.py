@@ -10,7 +10,7 @@ import torch.nn as nn
 from pathlib import Path
 from transformers.models.t5.modeling_t5 import T5Stack
 from transformers.cache_utils import Cache
-from transformers.modeling_outputs import Seq2SeqLMOutput
+from transformers.modeling_outputs import BaseModelOutput, Seq2SeqLMOutput
 from transformers import (
     T5ForConditionalGeneration,
     T5Config,
@@ -33,8 +33,13 @@ SUPP_START_IDX = 27
 SUPP_END_IDX = 27
 SUPP_PAD_IDX = 29
 
-SUPP_INPUT_DIM = 20
+MAIN_START_IDX = 59
+MAIN_END_IDX = 60
+MAIN_PAD_IDX = 61
+
+INPUT_DIM = 20
 SUPP_OUTPUT_DIM = 30
+MAIN_OUTPUT_DIM = 62
 
 ##### collate_fn
 # modified for ByT5
@@ -49,7 +54,7 @@ def collate_seq(seqs, device=None, pad_token_id=0):
         all_data.append(data)
         all_labels.append(labels)
         
-    all_data = pad_sequence(all_data, batch_first=True, padding_value=0.0)
+    all_data = pad_sequence(all_data, batch_first=True, padding_value=pad_token_id) # since pad token id is 0
     all_labels = pad_sequence(all_labels, batch_first=True, padding_value=pad_token_id)
 
     all_data = all_data.to(device)
@@ -208,6 +213,7 @@ class T5ForConditionalGenerationProjection(T5ForConditionalGeneration):
         super().__init__(config)
         self.model_dim = config.d_model
         self.input_dim = input_dim
+        self.pad_token_id = config.pad_token_id
 
         self.project_input = nn.Linear(input_dim, config.d_model)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -234,7 +240,6 @@ class T5ForConditionalGenerationProjection(T5ForConditionalGeneration):
     # @auto_docstring
     def forward(
         self,
-        # input_ids: torch.LongTensor | None = None,
         attention_mask: torch.FloatTensor | None = None,
         decoder_input_ids: torch.LongTensor | None = None,
         decoder_attention_mask: torch.BoolTensor | None = None,
@@ -308,9 +313,12 @@ class T5ForConditionalGenerationProjection(T5ForConditionalGeneration):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        inputs_embeds = self.project_input(inputs_embeds)
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
+            inputs_embeds = self.project_input(inputs_embeds)
+            # if attention_mask is None:
+            #     attention_mask = (inputs_embeds != self.pad_token_id).all(dim=-1)
+
             # Convert encoder inputs in embeddings if needed
             encoder_outputs = self.encoder(
                 input_ids=None,
@@ -331,6 +339,8 @@ class T5ForConditionalGenerationProjection(T5ForConditionalGeneration):
 
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
+            # if decoder_attention_mask is None:
+            #     decoder_attention_mask = (labels != self.pad_token_id)
             decoder_input_ids = self._shift_right(labels)
 
         # Decode
@@ -357,10 +367,26 @@ class T5ForConditionalGenerationProjection(T5ForConditionalGeneration):
 
         loss = None
         if labels is not None:
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
+            # loss_fct1 = nn.CrossEntropyLoss(ignore_index=-100)
+            # loss_fct2 = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
+            # loss_fct3 = nn.CrossEntropyLoss(reduction='sum')
+            # loss_fct4 = nn.CrossEntropyLoss(reduction='none')
+
             # move labels to correct device to enable PP
             labels = labels.to(lm_logits.device)
             loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+
+            # loss1 = loss_fct1(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+            # loss2 = loss_fct2(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+            # loss3 = loss_fct3(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+            # loss4 = loss_fct4(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+
+            # print(f"Loss Ignore Index -100: {loss1}")
+            # print(f"Loss Ignore Index 0: {loss2}")
+            # print(f"Loss Sum Reduce (No Pad): {loss3 / labels.view(-1).shape[0]}")
+            # print(f"Loss Sum Reduce (Pad): {(loss4*pad_mask).sum() / pad_mask.sum()}")
+            # print()
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs

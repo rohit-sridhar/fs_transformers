@@ -12,3 +12,5 @@ argparse
 scikit-learn
 matplotlib
 transformers
+evaluate
+jiwer
