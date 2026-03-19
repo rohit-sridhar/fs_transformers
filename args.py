@@ -7,13 +7,7 @@ from utils import (
 
 # Choices for analysis args
 ANALYSIS_CHOICES = [
-    "split_val",
-    "cmp_model_out",
-    "get_basic_stats",
     "loss_plots",
-    "gradient_plots",
-    "make_small",
-    "pca",
 ]
 
 # ranged float with open/closed interval options
@@ -123,7 +117,7 @@ def parse_args():
         "-mt",
         "--model_type",
         type=str,
-        choices=["LSTM", "GRU", "GRULSTM", "ProbGRULSTM1", "ProbGRULSTM2", "Transformer", "ByT5"],
+        choices=["ByT5"],
         required=is_required("model_type"),
         help="model type to train on (train)",
     )
@@ -133,14 +127,6 @@ def parse_args():
         type=str,
         choices=["Adam", "RMSprop", "Adafactor"],
         default="Adam",
-        help="optimizer type for training",
-    )
-    parser.add_argument(
-        "-lf",
-        "--loss_fn",
-        type=str,
-        choices=["MSE", "MAE", "GNLL", "CEL"],
-        default="MSE",
         help="optimizer type for training",
     )
     parser.add_argument(
@@ -205,14 +191,6 @@ def parse_args():
         help="analysis type to run. (analysis)",
     )
     parser.add_argument(
-        "-iv",
-        "--intervals",
-        type=int,
-        nargs="+",
-        required=is_required("intervals"),
-        help="time interval for plots (analysis)",
-    )
-    parser.add_argument(
         "-md",
         "--models_dir",
         type=path_exists,
@@ -225,13 +203,6 @@ def parse_args():
         type=path_exists,
         required=is_required("chkpt_path"),
         help="models dir for loss plot analysis (analysis)",
-    )
-    parser.add_argument(
-        "-sr",
-        "--split_ratio",
-        type=ranged_float(0.0, float("inf"), False, False),
-        default=0.9,
-        help="split ratio when doing train/test split. pass val in (0,1) for ratio and >= 1 for n samples (analysis)",
     )
     
     # preprocess args

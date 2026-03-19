@@ -28,7 +28,6 @@ ROOT = Path(__file__).resolve().parent
 MODELS_ROOT = ROOT / "models"
 ANALYSIS_ROOT = ROOT / "analysis"
 DATA_ROOT = ROOT / "data"
-# SPLITS_ROOT = ROOT / "datasets" / "splits"
 GEN_DATA_ROOT = Path("/data/deep_learning/ISLR-ML/mputils/out")
 
 ##### File paths for base datasets
@@ -78,7 +77,6 @@ HYPERPARAMS = [
     "preprocess",
     "use_pca",
     "data_file",
-    # "step_size",
 ]
 
 ##### miscellaneous functions
@@ -356,20 +354,13 @@ def process_metadata(
     cross_val=False,
 ):
     def add_groups(row):
-        # index_phrase = []
-        # row.phrase = START_CHAR + row.phrase + END_CHAR
-        
         if row.participant_id in groups:
             row['grp'] = groups[row.participant_id]
 
-        # for ch in new_phrase:
-        #     index_phrase.append(label_map[ch])
-        # row["phrase"] = index_phrase
         return row
     
     # groups variable is only used for n_tuples grouping
     groups = {}
-    # label_map = load_label_map(dataset)
     new_metadata = metadata.copy()
     if is_loocv(participant_grp_name):
         pt = participant_id[0]
@@ -400,9 +391,6 @@ def process_metadata(
         
     elif len(participant_id) > 0:
         new_metadata = metadata.loc[metadata["participant_id"].isin(participant_id)]
-    
-    # new_data = new_metadata.copy()[["phrase", "participant_id"]]
-    # new_data = new_data.apply(phrase_to_indices, axis=1)
     
     return new_metadata[["phrase", "participant_id"]]
 

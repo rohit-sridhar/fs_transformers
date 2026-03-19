@@ -107,27 +107,6 @@ def get_sampler_and_loader(df, idx_list, device, generator, pad_token_id=0):
     
     return idx_sampler, loader
 
-# return the loss function base on args
-# modified for ByT5
-def get_loss_fn():
-    if args.model_type == "ByT5":
-        return None
-
-    if args.loss_fn == "MSE":
-        return nn.MSELoss(reduction="sum")
-    elif args.loss_fn == "MAE":
-        return nn.L1Loss(reduction="sum")
-    elif args.loss_fn == "GNLL":
-        if not args.model_type.startswith("ProbGRULSTM"):
-            raise ValueError("Must pass ProbGRULSTM model type for GNLL loss")
-        return (nn.L1Loss(reduction="sum"), nn.GaussianNLLLoss(reduction="sum"))
-    elif args.loss_fn == "CEL":
-        if not args.model_type.startswith("Transformer"):
-            raise ValueError("Must use Transformer model with CrossEntropy Loss")
-        return nn.CrossEntropyLoss(reduction="none")
-        # return nn.CrossEntropyLoss(reduction="mean")
-        # return nn.CrossEntropyLoss(reduction="sum", ignore_index=SUPP_PAD_IDX)
-
 # returns optimizer based on optimizer type
 def get_optimizer(model):
     if args.optimizer == "Adafactor":
@@ -139,56 +118,6 @@ def get_optimizer(model):
 
 # Get model based on args model type
 def get_model(device):
-    # if args.model_type == "LSTM":
-    #     model = LSTMModel(
-    #         INPUT_DIM,
-    #         args.hidden_size,
-    #         len(TARGET_COLS),
-    #         num_layers=args.num_layers,
-    #         dropout=args.dropout,
-    #     )
-    # elif args.model_type == "GRU":
-    #     model = GRUModel(
-    #         INPUT_DIM,
-    #         32, # args.hidden_size,
-    #         4, # len(TARGET_COLS),
-    #         2, # num_layers=args.num_layers,
-    #         dropout=0.0, # dropout=args.dropout,
-    #     )
-    # elif args.model_type == "GRULSTM":
-    #     model = GRULSTMModel(
-    #         INPUT_DIM,
-    #         args.hidden_size,
-    #         len(TARGET_COLS),
-    #         num_layers=args.num_layers,
-    #         dropout=args.dropout,
-    #     )
-    # elif args.model_type == "ProbGRULSTM1":
-    #     if args.loss_fn != "GNLL":
-    #         raise ValueError("Must pass GNLL loss type for ProbGRULSTM1")
-    #     
-    #     model = ProbGRULSTMModel1(
-    #         INPUT_DIM,
-    #         args.hidden_size,
-    #         len(TARGET_COLS),
-    #         num_layers=args.num_layers,
-    #         dropout=args.dropout,
-    #     )
-    # elif args.model_type == "ProbGRULSTM2":
-    #     if args.loss_fn != "GNLL":
-    #         raise ValueError("Must pass GNLL loss type for ProbGRULSTM2")
-    #     
-    #     model = ProbGRULSTMModel2(
-    #         INPUT_DIM,
-    #         args.hidden_size,
-    #         len(TARGET_COLS),
-    #         num_layers=args.num_layers,
-    #         dropout=args.dropout,
-    #     )
-    # elif args.model_type == "Transformer":
-    #     if args.loss_fn != "CEL":
-    #         raise ValueError("Must use CEL with Transformer model type")
-    #     model = TransformerModel(INPUT_DIM, SUPP_OUTPUT_DIM)
     if args.model_type == "ByT5":
         model_args = [INPUT_DIM]
         model = T5ForConditionalGenerationProjection.from_pretrained(
@@ -356,7 +285,6 @@ def train_model(
     pad_token_id=0,
 ):
     optimizer = get_optimizer(model)
-    loss_fn = get_loss_fn()
     
     model.eval()
     for epoch in tqdm(
