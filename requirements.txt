@@ -58,7 +58,6 @@ onnx==1.20.1
 onnx-ir==0.2.0
 onnxruntime==1.24.3
 onnxscript==0.6.2
-packaging @ file:///home/task_176104874243446/conda-bld/packaging_1761049080023/work
 pandas==3.0.1
 pillow==12.1.1
 propcache==0.4.1
