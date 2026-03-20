@@ -48,14 +48,22 @@ def collate_seq(seqs, device=None, pad_token_id=0):
     all_labels = []
     
     for seq in seqs:
-        data = torch.tensor(seq[0])
+        data = torch.tensor(np.vstack(seq[0])).float()
         labels = torch.tensor(seq[1])
         
         all_data.append(data)
         all_labels.append(labels)
         
-    all_data = pad_sequence(all_data, batch_first=True, padding_value=pad_token_id) # since pad token id is 0
-    all_labels = pad_sequence(all_labels, batch_first=True, padding_value=pad_token_id)
+    all_data = pad_sequence(
+        all_data,
+        batch_first=True,
+        padding_value=pad_token_id
+    ) # since pad token id is 0
+    all_labels = pad_sequence(
+        all_labels,
+        batch_first=True,
+        padding_value=pad_token_id
+    )
 
     all_data = all_data.to(device)
     all_labels = all_labels.to(device)

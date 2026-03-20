@@ -1,3 +1,5 @@
+#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
+
 import os
 import sys
 import torch
@@ -16,7 +18,6 @@ from torch import nn
 from torch.optim import Adam, RMSprop, Adafactor
 from torch.utils.data import DataLoader
 from torch.nn.functional import one_hot
-# from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from transformers import AutoTokenizer
 from models import T5ForConditionalGenerationProjection
 
@@ -28,18 +29,15 @@ TRAIN_FILE_ROOT = Path(__file__).resolve().parent
 sys.path.append(f"{TRAIN_FILE_ROOT}/..")
 
 from utils import (
-    read_pickle,
+    read_parquet,
     df_to_bytes,
     MODELS_ROOT,
     BYT5_NUM_SPECIAL_TOKENS,
 )
 from args import parse_args
 from models import (
-    TransformerModel,
     DATA_PAD,
-    # SUPP_PAD_IDX,
     INPUT_DIM,
-    # SUPP_OUTPUT_DIM,
     IdxDataset,
     SimpleRandomSampler,
     collate_seq,
@@ -126,10 +124,6 @@ def get_model(device):
         )
         model.init_linear_projection()
 
-        # print(torch.all(model.encoder.embed_tokens.weight == model.decoder.embed_tokens.weight))
-        # print(torch.all(model.shared.weight == model.decoder.embed_tokens.weight))
-        # sys.exit(1)
-
     model.to(device)
     model.train()
 
@@ -139,16 +133,16 @@ def get_model(device):
 
 # save model and various params and data about current state
 # def save_model(model, optimizer, preprocessor, epoch, loss_fn, save_dir):
-def save_model(model, optimizer, epoch, loss_fn, save_dir):
+# def save_model(model, optimizer, epoch, loss_fn, save_dir):
+def save_model(model, optimizer, epoch, save_dir):
     chkpt_name = save_dir.joinpath(f"{epoch}_of_{args.num_epochs}").with_suffix(".chkpt")
-    loss_tuple = (loss_fn.__class__.__name__, loss_fn)
+    # loss_tuple = (loss_fn.__class__.__name__, loss_fn)
 
     torch.save({
         "epoch": epoch,
-        "loss_fn": loss_tuple,
+    #     "loss_fn": loss_tuple,
         "model": (model.__class__.__name__, model),
         "optimizer": (optimizer.__class__.__name__, optimizer),
-        # "preprocessor": (preprocessor.__class__.__name__, preprocessor),
     }, chkpt_name)
 
 # get the batch score (if 
@@ -163,34 +157,6 @@ def get_batch_score(y_pred, y):
     
     return scores
 
-# get total computed loss for a batch
-def get_batch_loss(loss_fn, out, y):
-    if args.model_type.startswith("ProbGRULSTM"):
-        t_out = out[0]
-        stats_out = out[1]
-
-        means = stats_out[:,:,:2]
-        variances = torch.exp(stats_out[:,:,2:])
-
-        loss = (0.55 * loss_fn[0](t_out, y)) + (0.45 * loss_fn[1](means, y, variances))
-    else:
-        loss = loss_fn(out, y)
-
-    return loss
-
-# def get_padding_mask(src, tgt, ans, device):
-#     src_padding_mask = (src.sum(dim=-1) == DATA_PAD*src.shape[-1]).to(device)
-#     tgt_padding_mask = (tgt == SUPP_PAD_IDX).to(device)
-#     ans_padding_mask = (ans == SUPP_PAD_IDX).to(device)
-# 
-#     return src_padding_mask, tgt_padding_mask, ans_padding_mask
-
-# def get_causal_mask(model, tgt, device):
-#     tgt_mask = model.transformer.generate_square_subsequent_mask(
-#         tgt.shape[1], device=device
-#     )
-#     return tgt_mask != 0.0
-
 # get the validation loss (jsut for the training loop)
 def get_val_loss_and_score(
     model,
@@ -203,10 +169,7 @@ def get_val_loss_and_score(
     total_tgts = []
     total_losses = []
 
-    ####!!! Set bool below for small datasets !!!####
-    # model.eval()
-    ####!!! ||||||||||||||||||||||||||||||||| !!!####
-
+    model.eval()
     for seq in tqdm(
         loader,
         total=len_loader,
@@ -233,44 +196,14 @@ def get_val_loss_and_score(
         total_tgts.append(tgts.sum().item())
         total_scores.append(score.sum().item() / tgts.sum().item())
 
-        ################################################## OLD TRANSFORMER TRAINING
-        #     tgt = seq[1][:,:-1]
-        #     ans = seq[1][:,1:]
-        #     
-        #     first mask is the causal mask (for teacher forcing autoregressive training)
-        #     tgt_mask = model.transformer.generate_square_subsequent_mask(tgt.shape[1], device=device)
-        #     tgt_mask = get_causal_mask(model, tgt, device)
-        #     src_padding_mask, tgt_padding_mask, ans_padding_mask = get_padding_mask(
-        #         src,
-        #         tgt,
-        #         ans,
-        #         device
-        #     )
+    ####!!! Keep in eval for overfitting !!!####
+    if not args.overfit:
+        model.train()
+    ####!!! ||||||||||||||||||||||||||||||||| !!!####
 
-        #     out = model.forward(
-        #         src,
-        #         tgt,
-        #         tgt_mask=tgt_mask,
-        #         src_padding_mask=src_padding_mask,
-        #         tgt_padding_mask=tgt_padding_mask,
-        #     )
-        #     
-        #     out_flat = out.reshape((-1, SUPP_OUTPUT_DIM))
-        #     ans_flat = one_hot(ans, num_classes=SUPP_OUTPUT_DIM).float()
-        #     ans_flat = ans_flat.reshape((-1, SUPP_OUTPUT_DIM))
-        #     
-        #     ans_padding_mask = ans_padding_mask.reshape((-1))
-        #     loss = get_batch_loss(loss_fn, out_flat, ans_flat)
-        #     loss = (loss * ~ans_padding_mask).sum() / (~ans_padding_mask).sum()
-        # total_scores.append(get_batch_score(out, y))
-        # total_tgts += ans.shape[0] * ans.shape[1]
-        # total_loss += loss.item()
-
-    model.train()
     val_loss = np.average(total_losses, weights=total_tgts, axis=0)
     val_score = np.average(total_scores, weights=total_tgts, axis=0)
 
-    # return val loss and val score
     return val_loss, val_score
 
 # main model training loop
@@ -286,7 +219,11 @@ def train_model(
 ):
     optimizer = get_optimizer(model)
     
-    model.eval()
+    ####!!! Switch to eval below for overfitting !!!####
+    if args.overfit:
+        model.eval()
+    ####!!! ||||||||||||||||||||||||||||||||| !!!####
+
     for epoch in tqdm(
         list(range(1, args.num_epochs + 1)),
         desc="epochs",
@@ -331,57 +268,9 @@ def train_model(
             epoch_losses.append(loss.item())
             epoch_tgts.append(tgts.sum().item())
             epoch_scores.append(score.sum().item() / tgts.sum().item())
-
-            ################################################## OLD TRANSFORMER CODE
-            # src = seq[0]
-            # tgt = seq[1][:,:-1]
-            # ans = seq[1][:,1:]
-            # 
-            # # first mask is the causal mask (for teacher forcing autoregressive training)
-            # tgt_mask = get_causal_mask(model, tgt, device)
-            # src_padding_mask, tgt_padding_mask, ans_padding_mask = get_padding_mask(
-            #     src,
-            #     tgt,
-            #     ans,
-            #     device
-            # )
-            # 
-            # optimizer.zero_grad()
-            # out = model.forward(
-            #     src,
-            #     tgt,
-            #     tgt_mask=tgt_mask,
-            #     src_padding_mask=src_padding_mask,
-            #     tgt_padding_mask=tgt_padding_mask,
-            # )
-            # 
-            # out_flat = out.reshape((-1, SUPP_OUTPUT_DIM))
-            # ans_flat = one_hot(ans, num_classes=SUPP_OUTPUT_DIM).float()
-            # ans_flat = ans_flat.reshape((-1, SUPP_OUTPUT_DIM))
-
-            # ans_padding_mask = ans_padding_mask.reshape((-1))
-            # num_tgts = (~ans_padding_mask).sum()
-            # loss = get_batch_loss(loss_fn, out_flat, ans_flat)
-            # loss = (loss * ~ans_padding_mask).sum() / num_tgts
-            # 
-            # loss.backward()
-            # optimizer.step()
-            # 
-            # out_idx = torch.argmax(out, dim=-1)
-            # score = (out_idx == ans).reshape((-1))
-            # score = (score * ~ans_padding_mask).sum() / num_tgts
-
-            # epoch_tgts.append((~ans_padding_mask).sum().item())
-            # epoch_scores.append(score.item())
-            # epoch_losses.append(loss.item())
         
         # Hardcode logging epochs to every 2 (change as needed)
         if epoch % 2 == 0:
-            ################################################## OLD TRANSFORMER CODE
-            # train_score = np.average(epoch_scores, weights=epoch_tgts)
-            # val_loss, val_score = get_val_loss_and_score(model, val_loader, loss_fn)
-            # val_loss = get_val_loss_and_score(model, val_loader, loss_fn, device)
-            # logging.info(f"Loss and score of epoch {epoch} - train: {train_loss} | val: {val_loss} | train: {train_score}") | val: {val_score}")
 
             val_loss, val_score = get_val_loss_and_score(model, val_loader, device, pad_token_id)
             train_loss = np.average(epoch_losses, weights=epoch_tgts)
@@ -391,7 +280,8 @@ def train_model(
             # logging.info(f"Preds: {preds} | labels: {labels}")
     
         if epoch % args.save_every == 0:
-            save_model(model, optimizer, epoch, loss_fn, save_dir)
+            # save_model(model, optimizer, epoch, loss_fn, save_dir)
+            save_model(model, optimizer, epoch, save_dir)
         
         sampler.shuffle_data()
 
@@ -430,8 +320,9 @@ if __name__ == "__main__":
     
     setup_logger(save_dir)
     logging.info(args)
+    logging.info(f"args_hash: {args_hash}")
      
-    df = read_pickle(args.data_file)
+    df = read_parquet(args.data_file)
     if args.model_type == "ByT5":
         tokenizer = AutoTokenizer.from_pretrained("google/byt5-small")
         df = df_to_bytes(df, eos_token_id=tokenizer.eos_token_id)
@@ -444,8 +335,9 @@ if __name__ == "__main__":
         random_state=args.seed
     )
 
-    ####!!! Print below for small datasets !!!####
-    # print(f"Train Seqs: {train_idx}")
+    ####!!! Log below for overfitting !!!####
+    if args.overfit:
+        logging.info(f"Train Seqs: {train_idx}")
     ####!!! ||||||||||||||||||||||||||||||||| !!!####
     
     torch.manual_seed(args.seed)
@@ -468,10 +360,7 @@ if __name__ == "__main__":
         pad_token_id=tokenizer.pad_token_id
     )
 
-    # replace 20 with num_feats and 3 with num_rows later
     model = get_model(device)
-    
-    # count_parameters_and_data(model, 3, 20)
     train_model(
         model,
         train_sampler,

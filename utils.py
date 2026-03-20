@@ -10,6 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pyarrow as pa
 
+from collections import Counter
 from pyarrow.parquet import ParquetFile
 from tqdm.auto import tqdm
 from dataclasses import dataclass
@@ -29,6 +30,12 @@ MODELS_ROOT = ROOT / "models"
 ANALYSIS_ROOT = ROOT / "analysis"
 DATA_ROOT = ROOT / "data"
 GEN_DATA_ROOT = Path("/data/deep_learning/ISLR-ML/mputils/out")
+
+# Regex for main dataset classifications (TODO move up later)
+NAME_RE_PATTERNS=[r"([a-zA-Z]+\s+)+[a-zA-Z]+"]
+ADDRESS_RE_PATTERNS=[r"[0-9]+\s+([a-zA-Z0-9\.]+\s+)*[a-zA-Z0-9\.]+"]
+PHONE_RE_PATTERNS=[r"\+?([0-9]+-)+[0-9]+"]
+URL_RE_PATTERNS=[r"(.+[/\.])+.+/?"]
 
 ##### File paths for base datasets
 FILE_PATHS = {
@@ -80,9 +87,21 @@ HYPERPARAMS = [
 ]
 
 ##### miscellaneous functions
-def read_pickle(data_file):
-    df = pd.read_pickle(data_file)
+def read_parquet(data_file):
+    df = pd.read_parquet(data_file)
     return df
+
+def rm_suffixes(p):
+    while p.suffix:
+        p = p.with_suffix("")
+    return p
+
+def get_new_file_with_ext(old_file, add_ext):
+    old_file_name = rm_suffixes(old_file)
+    new_path = (
+        old_file.parent / f"{old_file_name.stem}_{add_ext}"
+    ).with_suffix("".join(old_file.suffixes))
+    return new_path
 
 ##### ANALYSIS FUNCTIONS ######
 
@@ -135,6 +154,110 @@ def get_args_from_output(lines):
                 return n_str, hyperparams
 
     return "n0", ""
+
+##### count label chars
+# pd apply function to count chars in row label
+def count_row_characters(row, char_counts={}):
+    for c in row.phrase:
+        char_counts[c] += 1
+
+# counts characters in labels across all metadata rows and prints counts
+def count_label_characters(dataset):
+    metadata_file = FILE_PATHS[dataset]["metadata"]
+    metadata = pd.read_csv(metadata_file)
+
+    char_counts = Counter()
+    metadata.apply(
+        count_row_characters,
+        char_counts=char_counts,
+        axis=1
+    )
+    for key in char_counts:
+        print(f"{key} count: {char_counts[key]}")
+
+##### classify data
+# pd apply function to classify rows
+def classify_row(row):
+    classification = "NA"
+    if re.fullmatch(NAME_RE_PATTERNS[0], row.phrase):
+        classification = "name"
+    elif re.fullmatch(ADDRESS_RE_PATTERNS[0], row.phrase):
+        classification = "address"
+    elif re.fullmatch(PHONE_RE_PATTERNS[0], row.phrase):
+        classification = "phone"
+    elif re.fullmatch(URL_RE_PATTERNS[0], row.phrase):
+        classification = "url"
+    
+    return classification
+
+# do (stratified or categorical) sampling and save data
+def sample_and_save_data(metadata, df, data_file, n, seed, ext):
+    train_seqs, _ = train_test_split(
+        metadata.index.to_list(),
+        train_size=n,
+        stratify=metadata["classification"],
+        random_state=seed,
+    )
+    print(train_seqs)
+
+    new_file = get_new_file_with_ext(data_file, f"{ext}{n}")
+
+    df = df.loc[train_seqs]
+    df.to_parquet(new_file)
+
+    print(metadata.loc[train_seqs])
+    print(f"Created {new_file} with only sequences above")
+
+# drop any indices in metadata not in df to prevent sampling discrepancies
+def drop_metadata_seqs(metadata, df):
+    md_ids = set(metadata.index.to_list())
+    df_ids = set(df.index.to_list())
+
+    metadata = metadata.drop(index=(md_ids - df_ids))
+    return metadata
+
+# classifies the data and provides summary
+def sample_classification(dataset, data_file, sample_strategy, n, seed):
+    metadata_file = FILE_PATHS[dataset]["metadata"]
+
+    metadata = pd.read_csv(metadata_file)
+    df = read_parquet(data_file)
+    metadata = metadata.set_index("sequence_id")
+    
+    metadata = drop_metadata_seqs(metadata, df)
+    metadata["classification"] = metadata.apply(classify_row, axis=1)
+    print(metadata.groupby("classification").size())
+    
+    if sample_strategy == "stratified":
+        sample_and_save_data(
+            metadata,
+            df, data_file,
+            n, seed, "cls"
+        )
+    elif sample_strategy == "categorical":
+        classes = set(metadata["classification"].to_list())
+        for cls in classes:
+            sample_and_save_data(
+                metadata[metadata["classification"] == cls],
+                df, data_file,
+                n, seed, f"cls-{cls}"
+            )
+
+    # print(metadata[metadata["classification"] == "NA"])
+    
+##### make small
+# make dataset small
+def make_small(data_file, seed):
+    random.seed(seed)
+    df = read_parquet(data_file)
+
+    seq_ids = df.index.to_list()
+    random.shuffle(seq_ids)
+
+    df_small = df.loc[seq_ids[:3]]
+    new_file = get_new_file_with_ext(data_file, "smp3")
+    
+    df_small.to_parquet(new_file)
 
 ##### make loss plots
 # gets the epoch and loss variables to make
@@ -215,24 +338,7 @@ def make_loss_plots(model_dir):
         
         plt.clf()
 
-##### data processing functions
-def df_to_bytes(df, eos_token_id=1):
-    def phrase_to_bytes(row):
-        # row.phrase = "".join([reverse_char_map[idx] for idx in row.phrase[1:-1]])
-        row.phrase = list(row.phrase.encode("utf-8"))
-        row.phrase = [enc + BYT5_NUM_SPECIAL_TOKENS for enc in row.phrase] + [eos_token_id]
-
-        return row
-    
-    # with open("supplemental_character_to_prediction_index.json", "r") as f:
-    #     char_map = json.load(f)
-    #     reverse_char_map = {char_map[key]:key for key in char_map}
-    df = df.apply(phrase_to_bytes, axis=1)
-
-    return df
-
 ###### PREPROCESSING FUNCTIONS ######
-
 ##### Boolean helpers
 # checks if doing loocv
 def is_pt_split(participant_grp_name):
@@ -394,6 +500,18 @@ def process_metadata(
     
     return new_metadata[["phrase", "participant_id"]]
 
+##### data processing functions
+def df_to_bytes(df, eos_token_id=1):
+    def phrase_to_bytes(row):
+        row.phrase = list(row.phrase.encode("utf-8"))
+        row.phrase = [enc + BYT5_NUM_SPECIAL_TOKENS for enc in row.phrase] + [eos_token_id]
+
+        return row
+    
+    df = df.apply(phrase_to_bytes, axis=1)
+
+    return df
+
 # Convert all data so that frames are joined into a single list
 def process_all_data(data):
     seq_ids = data.index.values.tolist()
@@ -498,7 +616,7 @@ def interpolate(row, interpolate_val=0):
 ###!! it also centers hands around the wrist point.
 ###!! For now, flip the y coordinates (1 - y) since they appear
 ###!! to be flipped.
-def read_parquet_data(
+def read_source_parquet_data(
     dataset,
     na_threshold=1.0,
     dropna=True,

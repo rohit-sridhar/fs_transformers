@@ -1,8 +1,12 @@
+#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
+
 import torch
 import sys
 import random
 import evaluate
 import json
+
+import numpy as np
 import pandas as pd
 
 from tqdm import tqdm
@@ -19,7 +23,11 @@ def get_output(
     tokenizer,
     print_str=False,
 ):
-    out_ids = out_seq.squeeze().detach()[1:-1]
+    if args.test_type in ["gen","grd"]:
+        out_ids = out_seq.squeeze().detach()[1:-1]
+    elif args.test_type == "fwd":
+        out_ids = out_seq.squeeze().detach()[:-1]
+
     labels_ids = labels[0][:-1]
 
     out_decoded = tokenizer.decode(out_ids)
@@ -122,7 +130,7 @@ def make_results_json(pred_dict):
     pred_path_part_1 = args.chkpt_path.parts[-4]
     pred_path_part_2 = args.chkpt_path.parts[-3]
     pred_path_part_3 = args.chkpt_path.parts[-2]
-    pred_output_dir = ANALYSIS_ROOT / "model_score" / pred_path_part_1 / pred_path_part_2 / pred_path_part_3
+    pred_output_dir = MODELS_ROOT/ pred_path_part_1 / pred_path_part_2 / pred_path_part_3
     pred_output_dir.mkdir(exist_ok=True, parents=True)
 
     pred_output_path = pred_output_dir / pred_output_file
@@ -132,7 +140,7 @@ def make_results_json(pred_dict):
 
 if __name__ == "__main__":
     args = parse_args()
-    df = pd.read_pickle(args.data_file)
+    df = pd.read_parquet(args.data_file)
     
     device = torch.device("cuda") if args.use_gpu else torch.device("cpu")
     model_files = torch.load(args.chkpt_path, weights_only=False, map_location=device)
@@ -151,7 +159,8 @@ if __name__ == "__main__":
     references = []
     pred_dict = {}
     for i,seq_id in enumerate(tqdm(seq_ids, position=args.bar_position)):
-        inputs_embeds = torch.tensor(df.loc[seq_id].all_landmarks)[None,:].to(device)
+        inputs_embeds = torch.tensor(np.vstack(df.loc[seq_id].all_landmarks))
+        inputs_embeds = inputs_embeds[None,:].float().to(device)
         labels = torch.tensor(df.loc[seq_id].phrase)[None,:].to(device)
         
         if args.test_type == "grd":
@@ -161,7 +170,7 @@ if __name__ == "__main__":
                 inputs_embeds,
                 labels,
                 tokenizer,
-                print_str=False
+                print_str=args.debug
             )
         elif args.test_type == "gen":
             out_str, labels_str = generate(
@@ -170,7 +179,7 @@ if __name__ == "__main__":
                 inputs_embeds,
                 labels,
                 tokenizer,
-                print_str=False
+                print_str=args.debug
             )
         elif args.test_type == "fwd":
             out_str, labels_str = sanity_check(
@@ -179,7 +188,7 @@ if __name__ == "__main__":
                 inputs_embeds,
                 labels,
                 tokenizer,
-                print_str=False
+                print_str=args.debug
             )
 
         predictions.append(out_str)
@@ -192,5 +201,6 @@ if __name__ == "__main__":
 
     cer_score = evaluate_sequences(predictions, references)
     pred_dict[-1] = {'final_cer': cer_score}
-    make_results_json(pred_dict)
+    if not args.debug:
+        make_results_json(pred_dict)
 

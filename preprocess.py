@@ -1,4 +1,4 @@
-#!/usr/local/bin/python
+#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
 
 ##### Preprocess script.
 ## This script takes raw parquet data from a source and transforms
@@ -14,7 +14,6 @@ import pandas as pd
 import numpy as np
 
 from itertools import product
-from tqdm import tqdm
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 
@@ -29,7 +28,7 @@ from utils import (
     is_ntuples,
     is_pt_split,
     get_train_test_val_split,
-    read_parquet_data,
+    read_source_parquet_data,
     save_data,
 )
 from args import *
@@ -74,7 +73,7 @@ if __name__ == "__main__":
     metadata = pd.read_csv(FILE_PATHS[args.dataset]["metadata"])
     metadata.set_index(["sequence_id"], inplace=True)
     
-    all_data = read_parquet_data(
+    all_data = read_source_parquet_data(
         args.dataset,
         na_threshold=args.na_threshold,
         dropna=args.dropna,

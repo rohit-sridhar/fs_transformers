@@ -8,6 +8,9 @@ from utils import (
 # Choices for analysis args
 ANALYSIS_CHOICES = [
     "loss_plots",
+    "make_small",
+    "sample_classification",
+    "count_label_chars",
 ]
 
 # ranged float with open/closed interval options
@@ -80,19 +83,24 @@ def is_script(script_names):
 
 def is_required(arg_name):
     if arg_name == "models_dir":
-        return arg_has_val(["-at", "--analysis_type"], ["loss_plots", "gradients"])
+        return arg_has_val(["-at", "--analysis_type"], ["loss_plots"])
     elif arg_name == "chkpt_path":
-        return arg_has_val(["-at", "--analysis_type"], ["gradient_plots", "cmp_model_out"]) \
-                or is_script(["test.py"])
-    elif arg_name == "intervals":
-        return arg_has_val(["-at", "--analysis_type"], ["get_basic_stats"])
+        return is_script(["test.py"])
     elif arg_name == "data_file":
-        return arg_has_val(["-at", "--analysis_type"], ["cmp_model_out", "get_basic_stats", "split_val", "make_small"]) \
+        return arg_has_val(["-at", "--analysis_type"], ["sample_classification", "make_small"]) \
                 or is_script(["train.py", "test.py"])
     elif arg_name == "analysis_type":
         return is_script(["analysis.py"])
+    elif arg_name == "dataset":
+        return arg_has_val(["-at", "--analysis_type"], ["sample_classification", "count_label_chars"]) \
+                or is_script(["preprocess.py"])
     elif arg_name == "model_sub_root" or arg_name == "model_type":
         return is_script(["train.py"])
+    elif arg_name == "n":
+        return arg_has_val(["-at", "--analysis_type"], ["sample_classification"]) \
+                or is_script(["test.py"])
+    elif arg_name == "sample_strategy":
+        return arg_has_val(["-at", "--analysis_type"], ["sample_classification"])
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -100,6 +108,12 @@ def parse_args():
     )
 
     # Model Args
+    parser.add_argument(
+        "-oft",
+        "--overfit",
+        action="store_true",
+        help="If true, trains move in eval mode to try and overfit to the dataset."
+    )
     parser.add_argument(
         "-std",
         "--std_out",
@@ -148,7 +162,10 @@ def parse_args():
         "--batch_size",
         type=ranged_int(low=1),
         default=1,
-        help="batch size (number of seqs to be collated) per train step (train LSTM/ConvLSTM)",
+        help=(
+            "batch size (number of seqs to be collated) per train step "
+            "(train LSTM/ConvLSTM)"
+        ),
     )
     parser.add_argument(
         "-lr",
@@ -168,17 +185,17 @@ def parse_args():
         help="how to search for the output seq. pass 'fwd' for sanity checking",
     )
     parser.add_argument(
+        "-cp",
+        "--chkpt_path",
+        type=path_exists,
+        required=is_required("chkpt_path"),
+        help="models dir for loss plot analysis (analysis)",
+    )
+    parser.add_argument(
         "-gpu",
         "--use_gpu",
         action="store_true",
         help="whether to use the GPU during test time (doesn't apply to trsining)",
-    )
-    parser.add_argument(
-        "-n",
-        "--n",
-        type=ranged_int(low=0),
-        default=5,
-        help="sample size for testing. if 0 uses the entire dataset.",
     )
 
     # analysis args
@@ -191,17 +208,22 @@ def parse_args():
         help="analysis type to run. (analysis)",
     )
     parser.add_argument(
+        "-ss",
+        "--sample_strategy",
+        type=str,
+        choices=["stratified", "categorical"],
+        required=is_required("sample_strategy"),
+        help=(
+            "sampling strategy: if stratified, samples all categories (proportionally) "
+            "and creates on dataframe. if cetegorical, samples n per category "
+            "and creates separate data frames."
+        ),
+    )
+    parser.add_argument(
         "-md",
         "--models_dir",
         type=path_exists,
         required=is_required("models_dir"),
-        help="models dir for loss plot analysis (analysis)",
-    )
-    parser.add_argument(
-        "-cp",
-        "--chkpt_path",
-        type=path_exists,
-        required=is_required("chkpt_path"),
         help="models dir for loss plot analysis (analysis)",
     )
     
@@ -228,7 +250,10 @@ def parse_args():
         "-dna",
         "--dropna",
         action="store_true",
-        help="Drop NA values. If False, will replace with 0s. if interpolation is not None, interpolates first then drops na. (preprocess)",
+        help=(
+            "Drop NA values. If False, will replace with 0s. if interpolation "
+            "is not None, interpolates first then drops na. (preprocess)"
+        ),
     )
     parser.add_argument(
         "-mlh",
@@ -236,18 +261,15 @@ def parse_args():
         action="store_true",
         help="Make the data left handed instead of right handed (preprocess)",
     )
-    # parser.add_argument(
-    #     "-au",
-    #     "--analyze_users",
-    #     action="store_true",
-    #     help="analyze users. (preprocess)",
-    # )
     parser.add_argument(
         "-ip",
         "--interpolate_val",
         type=ranged_int(0),
         default=None,
-        help="Insert average between each non-zero frame if > 0. Only fills in nans if 0 is passed. (preprocess)",
+        help=(
+            "Insert average between each non-zero frame if > 0. Only fills "
+            "in nans if 0 is passed. (preprocess)"
+        ),
     )
     parser.add_argument(
         "-nthr",
@@ -261,7 +283,10 @@ def parse_args():
         "--train_ratio",
         type=ranged_float(0.0, 1.0, True, True),
         default=0.9,
-        help="Percentage of sequences for training. Whole set is split train_ratio/1-train_ratio for test/test. Train set is further split by train_ratio for train/val (preprocess)",
+        help=(
+            "Percentage of sequences for training. Whole set is split train_ratio/1-train_ratio "
+            "for test/test. Train set is further split by train_ratio for train/val (preprocess)"
+        ),
     )
     parser.add_argument(
         "-pt",
@@ -269,7 +294,10 @@ def parse_args():
         type=str,
         nargs="*",
         default=[],
-        help="Filters data to specific participant. If an empty list, uses all participants (preprocess)",
+        help=(
+            "Filters data to specific participant. If an empty list, uses "
+            "all participants (preprocess)"
+        ),
     )
     parser.add_argument(
         "-ptgrp",
@@ -282,7 +310,7 @@ def parse_args():
         "-ds",
         "--dataset",
         type=str,
-        default="supplemental_gen",
+        required=is_required("dataset"),
         choices=NEW_DATASETS,
         help="Source dataset to preprocess (preprocess)",
     )
@@ -291,7 +319,10 @@ def parse_args():
         "--data_file_name_ext",
         type=str,
         default=None,
-        help="data file name extension when outputting preprocessed pickle. this is not a file extension. (preprocess)",
+        help=(
+            "data file name extension when outputting preprocessed pickle. this is not "
+            "a file extension. (preprocess)"
+        ),
     )
 
     # Shared
@@ -306,6 +337,16 @@ def parse_args():
         "--debug",
         action="store_true",
         help="run in debug mode (smaller datasets, verbose)",
+    )
+    parser.add_argument(
+        "-n",
+        "--n",
+        type=ranged_int(low=0),
+        required=is_required("n"),
+        help=(
+            "sample size for testing, sampling (analysis). if 0 (for testing) "
+            "uses the entire dataset."
+        ),
     )
     parser.add_argument(
         "-nc"
