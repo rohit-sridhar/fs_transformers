@@ -101,33 +101,52 @@ def is_required(arg_name):
                 or is_script(["test.py"])
     elif arg_name == "sample_strategy":
         return arg_has_val(["-at", "--analysis_type"], ["sample_classification"])
+    elif arg_name == "test_type":
+        return is_script(["test.py"])
 
 def parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
-    # Model Args
-    parser.add_argument(
-        "-oft",
-        "--overfit",
-        action="store_true",
-        help="If true, trains move in eval mode to try and overfit to the dataset."
+    script_setup_args = parser.add_argument_group("Script Setup Args", "Args for script setup")
+    model_setup_args = parser.add_argument_group("Model Setup Args", "Args for model setup (model type, dirs, etc.)")
+    training_args = parser.add_argument_group("Training Args", "Args for model training (hyperparameters)")
+    testing_args = parser.add_argument_group("Testing Args", "Args for model testing")
+    preprocess_args = parser.add_argument_group("Preprocess Args", "Args for data preprocessing")
+    analysis_args = parser.add_argument_group("Analysis Args", "Args for data analysis")
+    shared_args = parser.add_argument_group("Shared Args", "Args shared across scripts")
+
+    # Script Setup Args
+    script_setup_args.add_argument(
+        "-bp",
+        "--bar_position",
+        type=ranged_int(0),
+        default=0,
+        help="bar position for tqdm when multiprocessing (shared)",
     )
-    parser.add_argument(
+    script_setup_args.add_argument(
         "-std",
         "--std_out",
         action="store_true",
         help="If set, logs to stdout instead of log file."
     )
-    parser.add_argument(
+    script_setup_args.add_argument(
+        "-dbg",
+        "--debug",
+        action="store_true",
+        help="run in debug mode (smaller datasets, verbose)",
+    )
+
+    # Model/training Args
+    model_setup_args.add_argument(
         "-msr",
         "--model_sub_root",
         type=str,
         required=is_required("model_sub_root"),
         help="the model sub root to store model/logs in. not a full path (train)",
     )
-    parser.add_argument(
+    model_setup_args.add_argument(
         "-mt",
         "--model_type",
         type=str,
@@ -135,29 +154,36 @@ def parse_args():
         required=is_required("model_type"),
         help="model type to train on (train)",
     )
-    parser.add_argument(
+    model_setup_args.add_argument(
         "-op",
         "--optimizer",
         type=str,
-        choices=["Adam", "RMSprop", "Adafactor"],
-        default="Adam",
+        choices=["AdamW", "RMSprop", "Adafactor"],
+        default="AdamW",
         help="optimizer type for training",
     )
-    parser.add_argument(
+    training_args.add_argument(
+        "-lr",
+        "--learning_rate",
+        type=ranged_float(low=0.0, incl_low=False),
+        default=1e-5,
+        help="learning rate for training (train LSTM/ConvLSTM)",
+    )
+    training_args.add_argument(
         "-se",
         "--save_every",
         type=ranged_int(low=1),
         default=100,
         help="save every n epochs (train)",
     )
-    parser.add_argument(
+    training_args.add_argument(
         "-ep",
         "--num_epochs",
         type=ranged_int(low=1),
         default=500,
         help="number of epochs to train for (train LSTM/ConvLSTM)",
     )
-    parser.add_argument(
+    training_args.add_argument(
         "-bs",
         "--batch_size",
         type=ranged_int(low=1),
@@ -167,39 +193,39 @@ def parse_args():
             "(train LSTM/ConvLSTM)"
         ),
     )
-    parser.add_argument(
-        "-lr",
-        "--learning_rate",
-        type=ranged_float(low=0.0, incl_low=False),
-        default=1e-5,
-        help="learning rate for training (train LSTM/ConvLSTM)",
+    training_args.add_argument(
+        "-oft",
+        "--overfit",
+        action="store_true",
+        help="If true, trains move in eval mode to try and overfit to the dataset."
     )
 
     # testing Args
-    parser.add_argument(
-        "-tt",
-        "--test_type",
-        type=str,
-        choices=["gen", "fwd", "grd"],
-        default="gen",
-        help="how to search for the output seq. pass 'fwd' for sanity checking",
-    )
-    parser.add_argument(
+    testing_args.add_argument(
         "-cp",
         "--chkpt_path",
         type=path_exists,
         required=is_required("chkpt_path"),
         help="models dir for loss plot analysis (analysis)",
     )
-    parser.add_argument(
-        "-gpu",
-        "--use_gpu",
-        action="store_true",
-        help="whether to use the GPU during test time (doesn't apply to trsining)",
+    testing_args.add_argument(
+        "-tt",
+        "--test_type",
+        type=str,
+        choices=["gen", "fwd", "grd"],
+        required=is_required("test_type"),
+        help="how to search for the output seq. pass 'fwd' for sanity checking",
     )
 
     # analysis args
-    parser.add_argument(
+    analysis_args.add_argument(
+        "-md",
+        "--models_dir",
+        type=path_exists,
+        required=is_required("models_dir"),
+        help="models dir for loss plot analysis (analysis)",
+    )
+    analysis_args.add_argument(
         "-at",
         "--analysis_type",
         type=str,
@@ -207,7 +233,7 @@ def parse_args():
         required=is_required("analysis_type"),
         help="analysis type to run. (analysis)",
     )
-    parser.add_argument(
+    analysis_args.add_argument(
         "-ss",
         "--sample_strategy",
         type=str,
@@ -219,76 +245,9 @@ def parse_args():
             "and creates separate data frames."
         ),
     )
-    parser.add_argument(
-        "-md",
-        "--models_dir",
-        type=path_exists,
-        required=is_required("models_dir"),
-        help="models dir for loss plot analysis (analysis)",
-    )
     
     # preprocess args
-    parser.add_argument(
-        "-so",
-        "--split_once",
-        action="store_true",
-        help="split into just train/val (preprocess)",
-    )
-    parser.add_argument(
-        "-up",
-        "--use_polar",
-        action="store_true",
-        help="use polar coordinates instead (preprocess)",
-    )
-    parser.add_argument(
-        "-ud",
-        "--use_delta",
-        action="store_true",
-        help="use deltas between rows (preprocess)",
-    )
-    parser.add_argument(
-        "-dna",
-        "--dropna",
-        action="store_true",
-        help=(
-            "Drop NA values. If False, will replace with 0s. if interpolation "
-            "is not None, interpolates first then drops na. (preprocess)"
-        ),
-    )
-    parser.add_argument(
-        "-mlh",
-        "--make_left_handed",
-        action="store_true",
-        help="Make the data left handed instead of right handed (preprocess)",
-    )
-    parser.add_argument(
-        "-ip",
-        "--interpolate_val",
-        type=ranged_int(0),
-        default=None,
-        help=(
-            "Insert average between each non-zero frame if > 0. Only fills "
-            "in nans if 0 is passed. (preprocess)"
-        ),
-    )
-    parser.add_argument(
-        "-nthr",
-        "--na_threshold",
-        type=ranged_float(0.0, 1.0, False, True),
-        default=1.0,
-        help="Filter out sequences with greater than na_threshold pct na frames (preprocess)",
-    )
-    parser.add_argument(
-        "-tr",
-        "--train_ratio",
-        type=ranged_float(0.0, 1.0, True, True),
-        default=0.9,
-        help=(
-            "Percentage of sequences for training. Whole set is split train_ratio/1-train_ratio "
-            "for test/test. Train set is further split by train_ratio for train/val (preprocess)"
-        ),
-    )
-    parser.add_argument(
+    preprocess_args.add_argument(
         "-pt",
         "--participant_id",
         type=str,
@@ -299,14 +258,14 @@ def parse_args():
             "all participants (preprocess)"
         ),
     )
-    parser.add_argument(
+    preprocess_args.add_argument(
         "-ptgrp",
         "--participant_grp_name",
         type=str,
         default=None,
         help="Name for participant group (preprocess)",
     )
-    parser.add_argument(
+    preprocess_args.add_argument(
         "-ds",
         "--dataset",
         type=str,
@@ -314,7 +273,7 @@ def parse_args():
         choices=NEW_DATASETS,
         help="Source dataset to preprocess (preprocess)",
     )
-    parser.add_argument(
+    preprocess_args.add_argument(
         "-ne",
         "--data_file_name_ext",
         type=str,
@@ -324,57 +283,110 @@ def parse_args():
             "a file extension. (preprocess)"
         ),
     )
-
-    # Shared
-    parser.add_argument(
-        "-pca",
-        "--use_pca",
-        action="store_true",
-        help="whether or not to run pca. keeps 21 components (shared)",
+    preprocess_args.add_argument(
+        "-nthr",
+        "--na_threshold",
+        type=ranged_float(0.0, 1.0, False, True),
+        default=1.0,
+        help="Filter out sequences with greater than na_threshold pct na frames (preprocess)",
     )
-    parser.add_argument(
-        "-dbg",
-        "--debug",
-        action="store_true",
-        help="run in debug mode (smaller datasets, verbose)",
-    )
-    parser.add_argument(
-        "-n",
-        "--n",
-        type=ranged_int(low=0),
-        required=is_required("n"),
+    preprocess_args.add_argument(
+        "-tr",
+        "--train_ratio",
+        type=ranged_float(0.0, 1.0, True, True),
+        default=0.9,
         help=(
-            "sample size for testing, sampling (analysis). if 0 (for testing) "
-            "uses the entire dataset."
+            "Percentage of sequences for training. Whole set is split train_ratio/1-train_ratio "
+            "for test/test. Train set is further split by train_ratio for train/val (preprocess)"
         ),
     )
-    parser.add_argument(
-        "-nc"
+    preprocess_args.add_argument(
+        "-nc",
         "--n_components",
         type=ranged_int(1),
         default=10,
         help="n components for pca (shared)",
     )
-    parser.add_argument(
-        "-sd",
-        "--seed",
-        type=int,
-        default=1248,
-        help="seed for randomness (shared)",
-    )
-    parser.add_argument(
-        "-bp",
-        "--bar_position",
+    preprocess_args.add_argument(
+        "-ip",
+        "--interpolate_val",
         type=ranged_int(0),
-        default=0,
-        help="bar position for tqdm when multiprocessing (shared)",
+        default=None,
+        help=(
+            "Insert average between each non-zero frame if > 0. Only fills "
+            "in nans if 0 is passed. (preprocess)"
+        ),
     )
-    parser.add_argument(
+    preprocess_args.add_argument(
+        "-so",
+        "--split_once",
+        action="store_true",
+        help="split into just train/val (preprocess)",
+    )
+    preprocess_args.add_argument(
+        "-up",
+        "--use_polar",
+        action="store_true",
+        help="use polar coordinates instead (preprocess)",
+    )
+    preprocess_args.add_argument(
+        "-ud",
+        "--use_delta",
+        action="store_true",
+        help="use deltas between rows (preprocess)",
+    )
+    preprocess_args.add_argument(
+        "-pca",
+        "--use_pca",
+        action="store_true",
+        help="whether or not to run pca. for now only works on existing data files. (preprocess)",
+    )
+    preprocess_args.add_argument(
+        "-dna",
+        "--dropna",
+        action="store_true",
+        help=(
+            "Drop NA values. If False, will replace with 0s. if interpolation "
+            "is not None, interpolates first then drops na. (preprocess)"
+        ),
+    )
+    preprocess_args.add_argument(
+        "-mlh",
+        "--make_left_handed",
+        action="store_true",
+        help="Make the data left handed instead of right handed (preprocess)",
+    )
+
+    # Shared
+    shared_args.add_argument(
         "-df",
         "--data_file",
         type=path_exists,
         required=is_required("data_file"),
         help="data file to use when running a routine (shared)",
+    )
+    shared_args.add_argument(
+        "-gpu",
+        "--use_gpu",
+        action="store_true",
+        help="whether to use the GPU during test time (doesn't apply to trsining)",
+    )
+    shared_args.add_argument(
+        "-n",
+        "--n",
+        type=ranged_int(low=0),
+        required=is_required("n"),
+        help=(
+            "sample size for testing, sampling (analysis). if 0 (for testing only) "
+            "uses the entire dataset."
+        ),
+    )
+    shared_args.add_argument(
+        "-sd",
+        "--seed",
+        type=int,
+        default=1248,
+        help="seed for randomness (shared)",
     )
 
     return parser.parse_args()

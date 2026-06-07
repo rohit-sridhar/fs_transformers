@@ -1,4 +1,5 @@
-#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import os
 import sys

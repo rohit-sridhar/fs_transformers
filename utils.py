@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import os
 import re
 import sys
@@ -69,6 +72,7 @@ START_CHAR = "<"
 END_CHAR = ">"
 
 ##### Model Constants
+GB_BYTES = 1024**3
 BYT5_NUM_SPECIAL_TOKENS = 3
 
 HYPERPARAMS = [
@@ -198,7 +202,6 @@ def sample_and_save_data(metadata, df, data_file, n, seed, ext):
         stratify=metadata["classification"],
         random_state=seed,
     )
-    print(train_seqs)
 
     new_file = get_new_file_with_ext(data_file, f"{ext}{n}")
 
@@ -364,8 +367,8 @@ def use_all_data(train_ratio):
 ###!! For now, get_data_file_name does not rely on use_pca for since PCA
 ###!! is done after preprocessing is complete (even though it is techni-
 ###!! cally a preprocessing step).
-# def get_data_file_name(args, pca_in_name=True):
-def get_data_file_name(args):
+def get_data_file_name(args, pca_in_name=False):
+# def get_data_file_name(args):
     # for now, return data file without .train/.test/.val ext if passed
     # if args.data_file is not None:
     #     data_file = os.path.basename(args.data_file)
@@ -402,7 +405,8 @@ def get_data_file_name(args):
         name_params.append("delta")
     
     # if args.use_pca and pca_in_name:
-    #     name_params.append(f"pca{args.n_components}")
+    if pca_in_name:
+        name_params.append(f"pca{args.n_components}")
 
     if args.make_left_handed:
         name_params.append("lh")
@@ -520,7 +524,6 @@ def process_all_data(data):
     new_data = data.copy()[["all_landmarks"]]
     new_data = new_data.groupby(["sequence_id"]).agg(lambda x: list(x))
     
-    new_seq_ids = new_data.index.values.tolist()
     return new_data
 
 ##### data alteration functions
@@ -696,46 +699,50 @@ def save_data(data_file_name, train=None, val=None, test=None, all_data=None):
 
 # ##### pca and friends
 # # get landmark data as a list with sequence lengths
-# def get_landmark_data(df):
-#     data = df.all_landmarks.to_list()
-#     seq_lens = [len(seq) for seq in data]
-# 
-#     data = np.concatenate(data, axis=0)
-#     return data, seq_lens
-# 
-# # get pca features (transform data then use seq_lens to partition it into seqs again)
-# def get_pca_features(pipe, df, data, seq_lens):
-#     data = pipe.transform(data)
-#     new_data = []
-#     start = 0
-# 
-#     for length in seq_lens:
-#         end = start + length
-#         new_data.append(data[start:end])
-#         start = end
-# 
-#     df.all_landmarks = new_data
-#     return df
-# 
-# # run and save PCA data
-# def pca(file_prefix, file_suffix, args, pipe=None):
-#     full_prefix = Path(ROOT).joinpath("data", file_prefix)
-# 
-#     file = full_prefix.with_suffix(file_suffix)
-#     df = pd.read_pickle(file)
-#     data, lens = get_landmark_data(df)
-# 
-#     if not pipe:
-#         pipe = Pipeline([
-#             ("pca_solver", PCA(n_components=args.n_components))
-#         ])
-#         pipe.fit(data)
-#     df = get_pca_features(pipe, df, data, lens)
-# 
-#     new_prefix = get_data_file_name(args)
-#     pca_path = Path(ROOT).joinpath("data", new_prefix)
-#     pca_path = pca_path.with_suffix(file_suffix)
-# 
-#     df.to_pickle(pca_path)
-#     print(f"Saved PCA Transform: {pca_path}")
-#     return pipe
+def get_landmark_data(df):
+    data = df.all_landmarks.to_list()
+    data = [np.stack(frames) for frames in data]
+    seq_lens = [seq.shape[0] for seq in data]
+
+    data = np.concatenate(data, axis=0)
+    return data, seq_lens
+
+# get pca features (transform data then use seq_lens to partition it into seqs again)
+def get_pca_features(pipe, df, data, seq_lens):
+    data = pipe.transform(data)
+    new_data = []
+    start = 0
+
+    for length in seq_lens:
+        end = start + length
+        new_data.append(data[start:end].tolist())
+        start = end
+
+    df.all_landmarks = new_data
+    return df
+
+# run and save PCA data
+def pca(file_prefix, file_suffix, args, pipe=None):
+    full_prefix = Path(ROOT).joinpath("data", file_prefix)
+
+    file = full_prefix.with_suffix(file_suffix)
+    if not file.is_file():
+        raise FileNotFoundError("Run without --use_pca/-pca flag first to create the original dataset.")
+    df = pd.read_parquet(file)
+    data, lens = get_landmark_data(df)
+
+    if not pipe:
+        pipe = Pipeline([
+            ("pca_solver", PCA(n_components=args.n_components))
+        ])
+        pipe.fit(data)
+    df = get_pca_features(pipe, df, data, lens)
+
+    new_prefix = get_data_file_name(args, pca_in_name=True)
+    pca_path = Path(ROOT).joinpath("data", new_prefix)
+    pca_path = pca_path.with_suffix(file_suffix)
+
+    df.to_parquet(pca_path)
+    print(f"Saved PCA Transform: {pca_path}")
+    return pipe
+

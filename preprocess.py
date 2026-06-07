@@ -1,4 +1,5 @@
-#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 ##### Preprocess script.
 ## This script takes raw parquet data from a source and transforms
@@ -20,6 +21,7 @@ from sklearn.model_selection import train_test_split
 from utils import (
     DATA_ROOT,
     FILE_PATHS,
+    pca,
     get_data_file_name,
     process_metadata,
     process_all_data,
@@ -60,12 +62,13 @@ if __name__ == "__main__":
     print(args)
     check_preprocess_args(args)
 
-    # if args.use_pca:
-    #     file_prefix = get_data_file_name(args, pca_in_name=False)
-    #     pipe = pca(file_prefix, ".pkl.train", args, pipe=None)
-    #     pipe = pca(file_prefix, ".pkl.val", args, pipe=pipe)
-    #     pipe = pca(file_prefix, ".pkl.test", args, pipe=pipe)
-    #     sys.exit(0)
+    if args.use_pca:
+        # Get original data file name first
+        file_prefix = get_data_file_name(args, pca_in_name=False)
+        pipe = pca(file_prefix, ".pq.train", args, pipe=None)
+        pipe = pca(file_prefix, ".pq.val", args, pipe=pipe)
+        pipe = pca(file_prefix, ".pq.test", args, pipe=pipe)
+        sys.exit(0)
     
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -95,7 +98,7 @@ if __name__ == "__main__":
     all_data = process_all_data(all_data)
 
     full_data = new_metadata.merge(all_data, on="sequence_id", how="inner")
-    data_file_name = get_data_file_name(args)
+    data_file_name = get_data_file_name(args, pca_in_name=False)
     data_file_path = (DATA_ROOT / data_file_name).with_suffix(".pq")
 
     if use_all_data(args.train_ratio):

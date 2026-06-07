@@ -1,4 +1,5 @@
-#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import torch
 import sys
@@ -10,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from tqdm import tqdm
-from utils import df_to_bytes, ANALYSIS_ROOT
+from utils import df_to_bytes, MODELS_ROOT
 from args import parse_args
 from pathlib import Path
 from transformers import AutoTokenizer

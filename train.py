@@ -1,4 +1,5 @@
-#!/home/rsridhar37/miniconda3/envs/fs_transformers/bin/python
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import os
 import sys
@@ -15,7 +16,8 @@ from pathlib import Path
 from tqdm import tqdm
 
 from torch import nn
-from torch.optim import Adam, RMSprop, Adafactor
+from torch.optim import AdamW, RMSprop, Adafactor
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 from torch.utils.data import DataLoader
 from torch.nn.functional import one_hot
 from transformers import AutoTokenizer
@@ -33,6 +35,7 @@ from utils import (
     df_to_bytes,
     MODELS_ROOT,
     BYT5_NUM_SPECIAL_TOKENS,
+    GB_BYTES,
 )
 from args import parse_args
 from models import (
@@ -109,8 +112,8 @@ def get_sampler_and_loader(df, idx_list, device, generator, pad_token_id=0):
 def get_optimizer(model):
     if args.optimizer == "Adafactor":
         return Adafactor(model.parameters())
-    elif args.optimizer == "Adam":
-        return Adam(model.parameters(), lr=args.learning_rate)
+    elif args.optimizer == "AdamW":
+        return AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-2)
     elif args.optimizer == "RMSprop":
         return RMSprop(model.parameters(), lr=args.learning_rate, centered=True)
 
@@ -218,12 +221,15 @@ def train_model(
     pad_token_id=0,
 ):
     optimizer = get_optimizer(model)
+    scheduler = CosineAnnealingLR(optimizer, args.num_epochs, eta_min=5e-4)
+    # scheduler = StepLR(optimizer, 5, gamma=0.1)
     
     ####!!! Switch to eval below for overfitting !!!####
     if args.overfit:
         model.eval()
     ####!!! ||||||||||||||||||||||||||||||||| !!!####
 
+    len_loader = len(train_loader)
     for epoch in tqdm(
         list(range(1, args.num_epochs + 1)),
         desc="epochs",
@@ -233,8 +239,7 @@ def train_model(
         epoch_tgts = []
         epoch_losses = []
         epoch_scores = []
-        
-        len_loader = len(train_loader)
+         
         for seq in tqdm(
             train_loader,
             total=len_loader,
@@ -245,6 +250,7 @@ def train_model(
         ):
             inputs_embeds = seq[0]
             labels = seq[1]
+            optimizer.zero_grad()
 
             inputs_attention_mask = (inputs_embeds != pad_token_id).all(dim=-1)
             decoder_attention_mask = (labels != pad_token_id)
@@ -255,7 +261,7 @@ def train_model(
                 labels=labels,
                 decoder_attention_mask=decoder_attention_mask,
             )
-
+            
             loss = outputs.loss
             preds = torch.argmax(outputs.logits, axis=-1)
             tgts = (labels != pad_token_id)
@@ -263,20 +269,25 @@ def train_model(
 
             loss.backward()
             optimizer.step()
-            optimizer.zero_grad()
             
             epoch_losses.append(loss.item())
             epoch_tgts.append(tgts.sum().item())
             epoch_scores.append(score.sum().item() / tgts.sum().item())
+
+        logging.info(f"Learning rate {scheduler.get_last_lr()}")
+        scheduler.step()
         
         # Hardcode logging epochs to every 2 (change as needed)
         if epoch % 2 == 0:
-
             val_loss, val_score = get_val_loss_and_score(model, val_loader, device, pad_token_id)
             train_loss = np.average(epoch_losses, weights=epoch_tgts)
             train_score = np.average(epoch_scores, weights=epoch_tgts)
 
-            logging.info(f"Loss and score of epoch {epoch} - train: {train_loss} | val: {val_loss} | train: {train_score} | val: {val_score}")
+            current_mem = torch.cuda.memory_allocated() / GB_BYTES
+            max_mem = torch.cuda.max_memory_allocated() / GB_BYTES
+
+            logging.info(f"Loss and score of epoch {epoch} - train: {train_loss:.2f} | val: {val_loss:.2f} | train: {train_score:.2f} | val: {val_score:.2f}")
+            logging.info(f"Memory usage: current {current_mem:.2f} | max: {max_mem:.2f}")
             # logging.info(f"Preds: {preds} | labels: {labels}")
     
         if epoch % args.save_every == 0:
@@ -361,6 +372,8 @@ if __name__ == "__main__":
     )
 
     model = get_model(device)
+    memory_footprint = model.get_memory_footprint() / GB_BYTES
+    logging.info(f"model memory: {memory_footprint:.2f}")
     train_model(
         model,
         train_sampler,
