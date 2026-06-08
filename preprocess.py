@@ -35,8 +35,6 @@ from utils import (
 )
 from args import *
 
-global args
-
 ##### Check preprocess args
 def check_preprocess_args(args):
     if len(args.participant_id) > 1 and args.participant_grp_name is None:
@@ -56,12 +54,7 @@ def check_preprocess_args(args):
     if args.participant_grp_name == "pt_split" and len(args.participant_id) > 0:
         raise ValueError("For pt_split, all participants are randomly split. Do not pass pt ids.")
     
-
-if __name__ == "__main__":
-    args = parse_args()
-    print(args)
-    check_preprocess_args(args)
-
+def preprocess():
     if args.use_pca:
         # Get original data file name first
         file_prefix = get_data_file_name(args, pca_in_name=False)
@@ -75,7 +68,7 @@ if __name__ == "__main__":
     
     metadata = pd.read_csv(FILE_PATHS[args.dataset]["metadata"])
     metadata.set_index(["sequence_id"], inplace=True)
-    
+
     all_data = read_source_parquet_data(
         args.dataset,
         na_threshold=args.na_threshold,
@@ -103,10 +96,8 @@ if __name__ == "__main__":
 
     if use_all_data(args.train_ratio):
         save_data(data_file_path, all_data=full_data)
-        # Exit 
-        sys.exit(0)
     
-    if is_ntuples(args.participant_grp_name):
+    elif is_ntuples(args.participant_grp_name):
         groups = set(new_metadata.grp.to_list())
 
         start = data_file_name.find("ntuples")
@@ -155,4 +146,11 @@ if __name__ == "__main__":
     else:
         train, val, test = get_train_test_val_split(full_data, train_ratio=args.train_ratio, split_once=args.split_once, seed=args.seed)
         save_data(data_file_path, train=train, val=val, test=test)
+
+if __name__ == "__main__":
+    global args
+    args = parse_args()
+    print(args)
+    check_preprocess_args(args)
+    preprocess()
 
