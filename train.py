@@ -31,7 +31,7 @@ TRAIN_FILE_ROOT = Path(__file__).resolve().parent
 sys.path.append(f"{TRAIN_FILE_ROOT}/..")
 
 from utils import (
-    read_parquet,
+    # read_parquet,
     df_to_bytes,
     MODELS_ROOT,
     BYT5_NUM_SPECIAL_TOKENS,
@@ -286,8 +286,14 @@ def train_model(
             current_mem = torch.cuda.memory_allocated() / GB_BYTES
             max_mem = torch.cuda.max_memory_allocated() / GB_BYTES
 
-            logging.info(f"Loss and score of epoch {epoch} - train: {train_loss:.2f} | val: {val_loss:.2f} | train: {train_score:.2f} | val: {val_score:.2f}")
-            logging.info(f"Memory usage: current {current_mem:.2f} | max: {max_mem:.2f}")
+            logging.info((
+                f"Loss and score of epoch {epoch} - "
+                f"train loss: {train_loss:.2f} | "
+                f"val loss: {val_loss:.2f} | "
+                f"train score: {train_score:.2f} | "
+                f"val score: {val_score:.2f}"
+            ))
+            # logging.info(f"Memory usage: current {current_mem:.2f} | max: {max_mem:.2f}")
             # logging.info(f"Preds: {preds} | labels: {labels}")
     
         if epoch % args.save_every == 0:
@@ -333,7 +339,7 @@ if __name__ == "__main__":
     logging.info(args)
     logging.info(f"args_hash: {args_hash}")
      
-    df = read_parquet(args.data_file)
+    df = pd.read_parquet(args.data_file)
     if args.model_type == "ByT5":
         tokenizer = AutoTokenizer.from_pretrained("google/byt5-small")
         df = df_to_bytes(df, eos_token_id=tokenizer.eos_token_id)

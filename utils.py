@@ -100,10 +100,10 @@ def rm_suffixes(p):
         p = p.with_suffix("")
     return p
 
-def get_new_file_with_ext(old_file, add_ext):
+def get_new_file_with_ext(old_file, seed, add_ext):
     old_file_name = rm_suffixes(old_file)
     new_path = (
-        old_file.parent / f"{old_file_name.stem}_{add_ext}"
+        old_file.parent / "_".join([f"{old_file_name.stem}", f"sd{seed}", f"{add_ext}"])
     ).with_suffix("".join(old_file.suffixes))
     return new_path
 
@@ -203,7 +203,7 @@ def sample_and_save_data(metadata, df, data_file, n, seed, ext):
         random_state=seed,
     )
 
-    new_file = get_new_file_with_ext(data_file, f"{ext}{n}")
+    new_file = get_new_file_with_ext(data_file, seed, f"{ext}{n}")
 
     df = df.loc[train_seqs]
     df.to_parquet(new_file)
@@ -224,7 +224,7 @@ def sample_classification(dataset, data_file, sample_strategy, n, seed):
     metadata_file = FILE_PATHS[dataset]["metadata"]
 
     metadata = pd.read_csv(metadata_file)
-    df = read_parquet(data_file)
+    df = pd.read_parquet(data_file)
     metadata = metadata.set_index("sequence_id")
     
     metadata = drop_metadata_seqs(metadata, df)
@@ -252,13 +252,13 @@ def sample_classification(dataset, data_file, sample_strategy, n, seed):
 # make dataset small
 def make_small(data_file, seed):
     random.seed(seed)
-    df = read_parquet(data_file)
+    df = pd.read_parquet(data_file)
 
     seq_ids = df.index.to_list()
     random.shuffle(seq_ids)
 
     df_small = df.loc[seq_ids[:3]]
-    new_file = get_new_file_with_ext(data_file, "smp3")
+    new_file = get_new_file_with_ext(data_file, seed, "smp3")
     
     df_small.to_parquet(new_file)
 

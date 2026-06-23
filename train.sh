@@ -26,21 +26,21 @@ ROOT=/data/deep_learning/fs_transformers
 # pid+=("$!")
 # wait "${pid[@]}"
 # 
-#################################################################################
-############################## MAIN DATASET TRAIN ############################### 
 # bp=0
 # pid=()
-
-##### General split (USER INDEPENDENT) #####
-python ${ROOT}/train.py \
-        -df ${ROOT}/data/data_supplemental_gen_drop-na_lininterp0_sd1248_pt-split_rh.pq.train \
-        -msr pt_split \
-        -se 20 -ep 500 -bs 16 -lr 5e-4 \
-        -mt ByT5 -op Adafactor \
-        -bp 0 # -std
+# 
+# ##### General split (USER INDEPENDENT) #####
+# python ${ROOT}/train.py \
+#         -df ${ROOT}/data/data_supplemental_gen_drop-na_lininterp0_sd1248_pt-split_rh.pq.train \
+#         -msr pt_split \
+#         -se 20 -ep 500 -bs 16 -lr 5e-4 \
+#         -mt ByT5 -op Adafactor \
+#         -bp 0 # -std
 # pid+=("$!")
 # wait "${pid[@]}"
-
+# 
+#################################################################################
+############################## MAIN DATASET TRAIN ############################### 
 # ##### Debug on stratified datasets #####
 # 
 # python ${ROOT}/train.py \
@@ -50,25 +50,32 @@ python ${ROOT}/train.py \
 #         -mt ByT5 -op Adafactor \
 #         -bp 0 -oft -std
 # 
-# ns=(20 50)
-# for n in ${ns[@]}; do
-#     python ${ROOT}/train.py \
-#             -df ${ROOT}/data/data_main_train_drop-na_lininterp0_rh_cls${n}.pq.all \
-#             -msr debug_stratified \
-#             -se 500 -ep 1000 -bs 16 -lr 5e-4 \
-#             -mt ByT5 -op Adafactor \
-#             -bp 0 -oft # -std
-# done
-# 
-# ns=(100 1000)
-# for n in ${ns[@]}; do
-#     python ${ROOT}/train.py \
-#             -df ${ROOT}/data/data_main_train_drop-na_lininterp0_rh_cls${n}.pq.all \
-#             -msr debug_stratified \
-#             -se 200 -ep 1000 -bs 16 -lr 5e-4 \
-#             -mt ByT5 -op Adafactor \
-#             -bp 0 # -std
-# done
+
+seeds=(1248 2248 3248 4248 5248)
+ns=(50 100)
+
+for seed in ${seeds[@]}; do
+for n in ${ns[@]}; do
+    python ${ROOT}/train.py \
+            -df ${ROOT}/data/data_main_train_drop-na_lininterp0_rh_sd${seed}_cls${n}.pq.all \
+            -msr debug_stratified \
+            -se 500 -ep 1500 -bs 16 -lr 5e-4 \
+            -mt ByT5 -op Adafactor \
+            -bp 0 -oft # -std
+done
+done
+
+ns=(500 1000 2000 5000 10000)
+for seed in ${seeds[@]}; do
+for n in ${ns[@]}; do
+    python ${ROOT}/train.py \
+            -df ${ROOT}/data/data_main_train_drop-na_lininterp0_rh_sd${seed}_cls${n}.pq.all \
+            -msr debug_stratified \
+            -se 200 -ep 1600 -bs 16 -lr 5e-4 \
+            -mt ByT5 -op Adafactor \
+            -bp 0 # -std
+done
+done
 
 ##### debug on stratified dataset with larger learning rate and larger n
 # 

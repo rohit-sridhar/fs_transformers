@@ -150,7 +150,7 @@ def parse_args():
         "-mt",
         "--model_type",
         type=str,
-        choices=["ByT5"],
+        choices=["ByT5", "transformer"],
         required=is_required("model_type"),
         help="model type to train on (train)",
     )
