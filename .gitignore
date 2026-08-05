@@ -211,3 +211,6 @@ data/*
 analysis/*
 models/*
 !models/rm_old_models.sh
+
+# Individual files
+pace.sh
