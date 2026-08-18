@@ -21,6 +21,7 @@ from sklearn.model_selection import train_test_split
 from utils import (
     DATA_ROOT,
     FILE_PATHS,
+    INTERPOLATE_VALS,
     pca,
     get_data_file_name,
     process_metadata,
@@ -55,13 +56,13 @@ def check_preprocess_args(args):
         raise ValueError("For pt_split, all participants are randomly split. Do not pass pt ids.")
     
 def preprocess():
-    if args.use_pca:
-        # Get original data file name first
-        file_prefix = get_data_file_name(args, pca_in_name=False)
-        pipe = pca(file_prefix, ".pq.train", args, pipe=None)
-        pipe = pca(file_prefix, ".pq.val", args, pipe=pipe)
-        pipe = pca(file_prefix, ".pq.test", args, pipe=pipe)
-        sys.exit(0)
+    # if args.use_pca:
+    #     # Get original data file name first
+    #     file_prefix = get_data_file_name(args, pca_in_name=False)
+    #     pipe = pca(file_prefix, ".pq.train", args, pipe=None)
+    #     pipe = pca(file_prefix, ".pq.val", args, pipe=pipe)
+    #     pipe = pca(file_prefix, ".pq.test", args, pipe=pipe)
+    #     sys.exit(0)
     
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -69,24 +70,31 @@ def preprocess():
     metadata = pd.read_csv(FILE_PATHS[args.dataset]["metadata"])
     metadata.set_index(["sequence_id"], inplace=True)
 
+# old arg
+# na_threshold=args.na_threshold,
     all_data = read_source_parquet_data(
         args.dataset,
-        na_threshold=args.na_threshold,
         dropna=args.dropna,
         interpolate_val=args.interpolate_val,
         use_polar=args.use_polar,
         use_delta=args.use_delta,
         debug=args.debug,
+        centering=args.centering,
+        finger=args.finger,
+        participant_ids=args.participant_id
     )
     all_data = all_data.set_index("sequence_id")
     
     # The process functions below convert and aggregate data.
+    # The process_metadata function also considers cross_val,
+    # pt grp, and dataset information 
     new_metadata = process_metadata(
         metadata,
         participant_id=args.participant_id,
         participant_grp_name=args.participant_grp_name,
         dataset=args.dataset,
         seed=args.seed,
+        use_test=False,
     )
     all_data = process_all_data(all_data)
 
@@ -108,7 +116,7 @@ def preprocess():
             group_data = group_metadata.merge(all_data, on="sequence_id", how="inner").drop(["grp"], axis=1)
             train, val, test = get_train_test_val_split(group_data, train_ratio=args.train_ratio, split_once=args.split_once, seed=args.seed)
 
-            new_data_file_name = data_file_name[:start] + group + data_file_name[end:] 
+            new_data_file_name = data_file_name[:start] + group + data_file_name[end:]
             new_data_file_path = (DATA_ROOT / new_data_file_name).with_suffix(".pq")
             save_data(new_data_file_path, train=train, val=val, test=test)
     
@@ -124,7 +132,7 @@ def preprocess():
             participant_grp_name=args.participant_grp_name,
             dataset=args.dataset,
             seed=args.seed,
-            cross_val=True
+            use_test=True,
         )
         test = test_metadata.merge(all_data, on="sequence_id", how="inner")
 

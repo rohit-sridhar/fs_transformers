@@ -12,9 +12,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import pyarrow as pa
+import pyarrow.dataset as ds
 
 from collections import Counter
-from pyarrow.parquet import ParquetFile
+# from pyarrow.parquet import ParquetFile
 from tqdm.auto import tqdm
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,32 +42,59 @@ PHONE_RE_PATTERNS=[r"\+?([0-9]+-)+[0-9]+"]
 URL_RE_PATTERNS=[r"(.+[/\.])+.+/?"]
 
 ##### File paths for base datasets
+# MAIN_DATASETS = ["main_train", "main_validation", "main_test"]
+INTERPOLATE_VALS = [0, 1, 2]
 FILE_PATHS = {
-    "supplemental_gen": {
-        "metadata": GEN_DATA_ROOT / "metadata" / "supplemental_gen.csv",
-        "landmarks": GEN_DATA_ROOT / "landmarks" / "supplemental_gen.parquet",
+    (ds_root := "supplemental_gen"): {
+        "metadata": GEN_DATA_ROOT / "metadata" / f"{ds_root}.csv",
+        "landmarks": {
+            "orig": GEN_DATA_ROOT / "landmarks" / f"{ds_root}.parquet",
+        } | {
+            i: GEN_DATA_ROOT / "landmarks" / f"{ds_root}_lininterp{i}"
+            for i in INTERPOLATE_VALS
+        },
         "label_map": ROOT / "supplemental_character_to_prediction_index.json",
         "num_labels": 30,
-    },
-    "main_train": {
-        "metadata": GEN_DATA_ROOT / "metadata" / "main_train.csv",
-        "landmarks": GEN_DATA_ROOT / "landmarks" / "main_train.parquet",
-        "label_map": ROOT / "character_to_prediction_index.json",
-        "num_labels": 30,
-    },
-    "main_val": {
-        "metadata": GEN_DATA_ROOT / "metadata" / "main_val.csv",
-        "landmarks": GEN_DATA_ROOT / "landmarks" / "main_val.parquet",
-        "label_map": ROOT / "character_to_prediction_index.json",
-        "num_labels": 30,
-    },
+    }
 }
+
+# FILE_PATHS = {
+#     "supplemental_gen": {
+#         "metadata": GEN_DATA_ROOT / "metadata" / "supplemental_gen.csv",
+#         "landmarks": GEN_DATA_ROOT / "landmarks" / "supplemental_gen.parquet",
+#         "label_map": ROOT / "supplemental_character_to_prediction_index.json",
+#         "num_labels": 30,
+#     },
+#     "main_train": {
+#         "metadata": GEN_DATA_ROOT / "metadata" / "main_train.csv",
+#         "landmarks": GEN_DATA_ROOT / "landmarks" / "main_train.parquet",
+#         "label_map": ROOT / "character_to_prediction_index.json",
+#         "num_labels": 30,
+#     },
+#     "main_val": {
+#         "metadata": GEN_DATA_ROOT / "metadata" / "main_val.csv",
+#         "landmarks": GEN_DATA_ROOT / "landmarks" / "main_val.parquet",
+#         "label_map": ROOT / "character_to_prediction_index.json",
+#         "num_labels": 30,
+#     },
+# }
+
 NEW_DATASETS = list(FILE_PATHS.keys())
+CENTERING=["fc", "wc"]
+FINGERS=["tmb", "idx", "mid", "rin", "pin"]
 
-COLS = [0,1,4,5,8,9,12,13,16,17,20]
+ALL_COLS = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+WC_COLS = [1,4,5,8,9,12,13,16,17,20]
+FC_COLS = [4,8,12,16,20]
 
-X_SH_COLS = [f"x_hand_{col}" for col in COLS]
-Y_SH_COLS = [f"y_hand_{col}" for col in COLS]
+X_COLS = [f"x_hand_{col}" for col in ALL_COLS]
+Y_COLS = [f"y_hand_{col}" for col in ALL_COLS]
+
+X_WC_COLS = [f"x_hand_{col}" for col in WC_COLS]
+Y_WC_COLS = [f"y_hand_{col}" for col in WC_COLS]
+
+X_FC_COLS = [f"x_hand_{col}" for col in FC_COLS]
+Y_FC_COLS = [f"y_hand_{col}" for col in FC_COLS]
 
 START_CHAR = "<"
 END_CHAR = ">"
@@ -368,12 +396,12 @@ def use_all_data(train_ratio):
 ###!! is done after preprocessing is complete (even though it is techni-
 ###!! cally a preprocessing step).
 def get_data_file_name(args, pca_in_name=False):
-# def get_data_file_name(args):
     # for now, return data file without .train/.test/.val ext if passed
     # if args.data_file is not None:
     #     data_file = os.path.basename(args.data_file)
     #     return data_file.replace(".pkl.train", "")
 
+    ### names all args that take parameter values with the parameter and value in the name
     name_params = ["data", f"{args.dataset}"]
     if args.na_threshold < 1.0:
         name_params.append(f"na-thr{args.na_threshold}")
@@ -397,7 +425,13 @@ def get_data_file_name(args, pca_in_name=False):
             name_params.append(f"{args.participant_grp_name}-{pt_id}")
     elif len(args.participant_id) > 0 or is_pt_split(args.participant_grp_name):
         name_params.append(f"{args.participant_grp_name}")
+    
+    if args.finger is not None:
+        name_params.append(f"fgr-{args.finger}")
+    elif args.centering is not None:
+        name_params.append(f"ctr-{args.centering}")
 
+    ### names all args without parameter names preceding (only arg values for boolean args)
     if args.use_polar:
         name_params.append("polar")
 
@@ -405,8 +439,8 @@ def get_data_file_name(args, pca_in_name=False):
         name_params.append("delta")
     
     # if args.use_pca and pca_in_name:
-    if pca_in_name:
-        name_params.append(f"pca{args.n_components}")
+    # if pca_in_name:
+    #     name_params.append(f"pca{args.n_components}")
 
     if args.make_left_handed:
         name_params.append("lh")
@@ -434,34 +468,34 @@ def get_train_test_val_split(data, train_ratio, split_once=False, seed=7248):
 ##### Label Manipulation helpers
 # Loads label map (in reverse, if needed). The label map
 # maps characters to indices and vice verse for label encoding
-def load_label_map(dataset, reverse=False):
-    with open(FILE_PATHS[dataset]["label_map"], "r") as f:
-        label_map = json.load(f)
-    
-    if reverse:
-        keys = list(label_map.keys())
-        label_map = {label_map[key]:key for key in keys}
-
-    return label_map
-
-# Given a list of indices and a label map,
-# this function returns the translated label
-def get_text_from_idx(idx_label, label_map):
-    label = ""
-    for char_idx in idx_label:
-        label += label_map[char_idx]
-    return label
+# def load_label_map(dataset, reverse=False):
+#     with open(FILE_PATHS[dataset]["label_map"], "r") as f:
+#         label_map = json.load(f)
+#     
+#     if reverse:
+#         keys = list(label_map.keys())
+#         label_map = {label_map[key]:key for key in keys}
+# 
+#     return label_map
+# 
+# # Given a list of indices and a label map,
+# # this function returns the translated label
+# def get_text_from_idx(idx_label, label_map):
+#     label = ""
+#     for char_idx in idx_label:
+#         label += label_map[char_idx]
+#     return label
 
 ##### dataset conversion/reshape functions
 # Convert raw data to numpy (or in the future, torch) arrays
-# cross_val is only used when processing loocv data
+# use_test is only used when processing loocv data
 def process_metadata(
     metadata,
     participant_id=[],
     participant_grp_name=None,
     dataset="supplemental_gen",
     seed=1248,
-    cross_val=False,
+    use_test=False,
 ):
     def add_groups(row):
         if row.participant_id in groups:
@@ -474,7 +508,7 @@ def process_metadata(
     new_metadata = metadata.copy()
     if is_loocv(participant_grp_name):
         pt = participant_id[0]
-        if cross_val:
+        if use_test:
             # make test set using this option
             new_metadata = metadata.loc[metadata["participant_id"].isin([pt])]
         else:
@@ -487,6 +521,10 @@ def process_metadata(
         random.shuffle(participants)
         
         groups_save = {}
+        # groups participants into groups of size n.
+        # name of group is floor(i / n) s.t. i is 
+        # the i-th multiple of n. The group name is
+        # grp.rnd{floor(i / n)}.n
         for i in range(0, len(participants), n):
             ntup = tuple(participants[i:i+n])
             grp_name = f"grp.rnd{str(int(i / n))}.{n}"
@@ -540,13 +578,37 @@ def take_deltas(data):
     data = data.reset_index(level="sequence_id").reset_index(drop=True)
     return data
 
-# Center hands data around the 0 (wrist) data point.
-def center_hands(data):
-    data[X_SH_COLS] = data[X_SH_COLS].values - data["x_hand_0"].values[:,None]
-    data[Y_SH_COLS] = data[Y_SH_COLS].values - data["y_hand_0"].values[:,None]
+# Center hands data around the 0 (wrist) data point. Returns remaining
+# x and y cols
+def center_hands_and_pick_cols(data, centering="wc", finger=None):
+    # center on fingers by default if picking a finger only
+    centering = centering if finger is None else "fc"
+    x_cols = None
+    y_cols = None
+    
+    if centering == "wc":
+        data[X_WC_COLS] = data[X_WC_COLS].sub(data["x_hand_0"], axis=0)
+        data[Y_WC_COLS] = data[Y_WC_COLS].sub(data["y_hand_0"], axis=0)
+        
+        data = data.drop(labels=["x_hand_0", "y_hand_0"], axis=1)
+        x_cols = X_WC_COLS
+        y_cols = Y_WC_COLS
+    elif centering == "fc":
+        for fc_col, x_col, y_col in zip(FC_COLS, X_FC_COLS, Y_FC_COLS):
+            data[x_col] = data[x_col].sub(data[f"x_hand_{fc_col - 3}"], axis=0)
+            data[y_col] = data[y_col].sub(data[f"y_hand_{fc_col - 3}"], axis=0)
+            
+        if finger is None:
+            x_cols = X_FC_COLS
+            y_cols = Y_FC_COLS
+        else:
+            finger_i = FINGERS.index(finger)
+            x_cols = X_FC_COLS[finger_i:finger_i+1]
+            y_cols = Y_FC_COLS[finger_i:finger_i+1]
+    else:
+        raise ValueError("Centering can only be 'fc' or 'wc'")
 
-    data = data.drop(labels=["x_hand_0", "y_hand_0"], axis=1)
-    return data
+    return data, x_cols, y_cols
 
 # Make sure that only any sequence with greater than threshold < len(landmarks) / len(sequence) is allowed
 def threshold_data(data, threshold=1):
@@ -619,51 +681,61 @@ def interpolate(row, interpolate_val=0):
 ###!! it also centers hands around the wrist point.
 ###!! For now, flip the y coordinates (1 - y) since they appear
 ###!! to be flipped.
+# old arg
+# na_threshold=1.0,
 def read_source_parquet_data(
     dataset,
-    na_threshold=1.0,
     dropna=True,
     interpolate_val=None,
     use_polar=False,
     use_delta=False,
     debug=False,
+    centering="wc",
+    finger=None,
+    participant_ids=[],
 ):
+    interpolate_val = "orig" if interpolate_val is None else interpolate_val
+
     if debug:
         ## Use code below when developing or debugging
-        pf = ParquetFile(FILE_PATHS[dataset]["landmarks"])
-        first_ten_rows = next(pf.iter_batches(batch_size = 100000))
-        all_data = pa.Table.from_batches([first_ten_rows]).to_pandas()
+        pf = ds.dataset(
+            FILE_PATHS[dataset]["landmarks"][interpolate_val],
+            format="parquet",
+        )
+        first_batch = next(pf.to_batches(batch_size=1000))
+        all_data = pa.Table.from_batches([first_batch]).to_pandas()
     else:
         ## Use below line for main code.
-        all_data = pd.read_parquet(FILE_PATHS[dataset]["landmarks"])
+        filters = None if len(participant_ids) == 0 else [("participant_id", "in", participant_ids)]
+        all_data = pd.read_parquet(
+            FILE_PATHS[dataset]["landmarks"][interpolate_val],
+            filters=filters,
+            engine="pyarrow",
+            partitioning=["participant_id"],
+        )
     
-    all_data = threshold_na_sequences(all_data, na_threshold=na_threshold)
-    if dropna and interpolate is None:
+    # all_data = threshold_na_sequences(all_data, na_threshold=na_threshold)
+    if dropna:
         all_data = all_data.drop(columns=["frame"]).dropna(axis=0)
-    else:
-        ## Code for interpolation
-        all_data = all_data.drop(columns=["frame"]).fillna(0.0)
-        if interpolate is not None:
-            all_data = all_data.groupby("sequence_id").apply(
-                interpolate,
-                interpolate_val=interpolate_val
-            )
-            all_data = all_data.reset_index().drop("level_1", axis=1).set_index("sequence_id")
-
-        if dropna:
-            all_data = all_data[~(all_data == 0).all(axis=1)]
- 
+     
     colmap = {col:col.replace("right","hand") for col in all_data.columns}
     all_data = all_data.rename(columns=colmap).reset_index()
     
     #!!! This line needs to be treated with caution. may not be needed if upstream
     #!!! mediapipe landmark generation is fixed. TODO
-    all_data[Y_SH_COLS] = np.where(all_data[Y_SH_COLS] == 0, 0, 1 - all_data[Y_SH_COLS])
+    all_data[Y_COLS] = np.where(all_data[Y_COLS] == 0, 0, 1 - all_data[Y_COLS])
+    # all_data[Y_SH_COLS] = np.where(all_data[Y_SH_COLS] == 0, 0, 1 - all_data[Y_SH_COLS])
 
-    all_data = center_hands(all_data).loc[:,["sequence_id"] + X_SH_COLS[1:] + Y_SH_COLS[1:]]
+    all_data, x_cols, y_cols = center_hands_and_pick_cols(
+        all_data,
+        centering=centering,
+        finger=finger,
+    )
+    all_data = all_data.loc[:,["sequence_id"] + x_cols + y_cols]
     all_data.sequence_id = all_data.sequence_id.astype(int)
+    
     if use_polar:
-        for x_col, y_col in zip(X_SH_COLS[1:], Y_SH_COLS[1:]):
+        for x_col, y_col in zip(x_cols, y_cols):
             r_col = np.hypot(
                 all_data[x_col],
                 all_data[y_col],

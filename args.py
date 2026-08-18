@@ -2,7 +2,10 @@ import argparse
 import sys
 from pathlib import Path
 from utils import (
-    NEW_DATASETS
+    NEW_DATASETS,
+    INTERPOLATE_VALS,
+    FINGERS,
+    CENTERING,
 )
 
 # Choices for analysis args
@@ -284,6 +287,30 @@ def parse_args():
         ),
     )
     preprocess_args.add_argument(
+        "-fgr",
+        "--finger",
+        type=str,
+        choices=FINGERS,
+        default=None,
+        help=(
+            "Finger to use. use when extracting single fingers only. "
+            "will ignore centering arg if passed (auto centers at finger "
+            "MCP (for thumb, the CMC) points."
+        )
+    )
+    preprocess_args.add_argument(
+        "-ctr",
+        "--centering",
+        type=str,
+        choices=CENTERING,
+        default="wc",
+        help=(
+            "Centering strategy (wrist or finger centering) "
+            "if centering on fingers, uses MCP (for thumb, CMC) "
+            "points."
+        )
+    )
+    preprocess_args.add_argument(
         "-nthr",
         "--na_threshold",
         type=ranged_float(0.0, 1.0, False, True),
@@ -311,6 +338,7 @@ def parse_args():
         "-ip",
         "--interpolate_val",
         type=ranged_int(0),
+        choices=[None] + INTERPOLATE_VALS,
         default=None,
         help=(
             "Insert average between each non-zero frame if > 0. Only fills "
